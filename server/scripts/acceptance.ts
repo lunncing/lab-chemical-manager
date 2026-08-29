@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { io as connectSocket, type Socket } from 'socket.io-client';
 import { createSystem } from '../src/system.js';
 import { verifyPassword } from '../src/security.js';
+import { currentBeijingWeekStart, weekEnd } from '../src/purchase-weeks.js';
 
 const system = createSystem({ databasePath: ':memory:', seedDemo: true });
 const sockets: Socket[] = [];
@@ -30,6 +31,7 @@ async function connect(cookie: string) {
   await new Promise<void>((resolve, reject) => { socket.once('connect', resolve); socket.once('connect_error', reject); }); return socket;
 }
 function event(socket: Socket, name: string) { return new Promise<any>((resolve, reject) => { const timer = setTimeout(() => reject(new Error(`未收到 ${name}`)), 4000); socket.once(name, (data) => { clearTimeout(timer); resolve(data); }); }); }
+function shiftWeek(weekStart: string, days: number) { const value = new Date(`${weekStart}T00:00:00Z`); value.setUTCDate(value.getUTCDate() + days); return value.toISOString().slice(0, 10); }
 async function createPurchase(cookie: string, name: string, requestType: 'normal' | 'urgent', hazardous = false) {
   return (await json(await request('/purchases', cookie, { method: 'POST', body: JSON.stringify({ chemicalName: name, specification: '1 瓶', purpose: '验收实验', requestType, hazardous }) }), 201)).purchase;
 }
@@ -101,6 +103,9 @@ try {
   assert(teacherApprovals.includes(normal.id) && teacherApprovals.includes(urgent.id) && teacherApprovals.includes(dangerous.id) && teacherApprovals.includes(dangerousUrgent.id) && teacherApprovals.includes(rejectable.id));
   assert.equal((await request(`/purchases/${urgent.id}/decision`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: urgent.version }) })).status, 403);
   const approvedNormal = await decide(admin.cookie, normal, 'approved');
+  const currentWeek = currentBeijingWeekStart(); const previousWeek = shiftWeek(currentWeek, -7);
+  const archiveEntry = system.db.prepare('SELECT week_start,added_at FROM purchase_weekly_entries WHERE purchase_id=?').get(normal.id) as { week_start: string; added_at: string };
+  assert.equal(archiveEntry.week_start, currentWeek); assert.equal(archiveEntry.added_at, approvedNormal.decidedAt);
   let deferredUrgent = await decide(teacher.cookie, urgent, 'deferred', '等待预算');
   deferredUrgent = (await json(await request(`/purchases/${urgent.id}`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ purpose: '补充后的加急用途', version: deferredUrgent.version }) }))).purchase;
   assert.equal(deferredUrgent.status, 'pending_super'); assert.equal(deferredUrgent.approvalComment, null);
@@ -129,13 +134,24 @@ try {
   assert.deepEqual(procurementTaskRecipients(normal.id), ['admin', 'teacher']); assert.deepEqual(procurementTaskRecipients(dangerous.id), ['hazard', 'teacher']);
   console.log('PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing');
 
-  const normalCatalog = (await json(await request('/purchases/catalog/normal', admin.cookie))).purchases;
+  const normalCatalogBody = await json(await request('/purchases/catalog/normal', admin.cookie)); const normalCatalog = normalCatalogBody.purchases;
   const urgentCatalog = (await json(await request('/purchases/catalog/urgent', admin.cookie))).purchases;
   const dangerousQueue = (await json(await request('/purchases/catalog/hazardous', hazard.cookie))).purchases;
   assert(normalCatalog.some((item: any) => item.id === normal.id)); assert(!normalCatalog.some((item: any) => item.id === dangerous.id));
   assert(urgentCatalog.some((item: any) => item.id === urgent.id)); assert(!urgentCatalog.some((item: any) => item.id === dangerousUrgent.id));
   assert(dangerousQueue.some((item: any) => item.id === dangerous.id)); assert(dangerousQueue.some((item: any) => item.id === dangerousUrgent.id));
   console.log('PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue');
+
+  assert.deepEqual(normalCatalogBody.week, { weekStart: currentWeek, weekEnd: weekEnd(currentWeek), isCurrent: true });
+  const initialWeeks = (await json(await request('/purchases/catalog/normal/weeks', admin.cookie))).weeks;
+  assert.deepEqual(initialWeeks, [{ weekStart: currentWeek, weekEnd: weekEnd(currentWeek), count: 1, approvedCount: 1, purchasedCount: 0, isCurrent: true }]);
+  system.db.prepare('UPDATE purchase_weekly_entries SET week_start=? WHERE purchase_id=?').run(previousWeek, normal.id);
+  const rolledWeeks = (await json(await request('/purchases/catalog/normal/weeks', admin.cookie))).weeks;
+  assert.deepEqual(rolledWeeks, [
+    { weekStart: currentWeek, weekEnd: weekEnd(currentWeek), count: 0, approvedCount: 0, purchasedCount: 0, isCurrent: true },
+    { weekStart: previousWeek, weekEnd: weekEnd(previousWeek), count: 1, approvedCount: 1, purchasedCount: 0, isCurrent: false },
+  ]);
+  console.log('PASS weekly archive rollover: approval membership, current empty week, descending historical statistics');
 
   assert.equal((await request(`/purchases/${normal.id}/purchased`, alice.cookie, { method: 'POST', body: JSON.stringify({ version: approvedNormal.version }) })).status, 403);
   assert.equal((await request(`/purchases/${dangerous.id}/purchased`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: approvedDangerous.version }) })).status, 403);
@@ -145,6 +161,9 @@ try {
   assert.equal(purchasedNormal.status, 'purchased'); assert.equal(purchasedDangerous.status, 'purchased'); assert.equal(purchasedUrgent.status, 'purchased'); assert.equal(purchasedDangerousUrgent.status, 'purchased');
   assert.equal((await request(`/purchases/${normal.id}/purchased`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: purchasedNormal.version }) })).status, 409);
   assert.equal((await json(await request('/purchases/tasks/procurement', teacher.cookie))).purchases.length, 0);
+  const historicalCatalog = await json(await request(`/purchases/catalog/normal?week=${previousWeek}`, admin.cookie));
+  assert.deepEqual(historicalCatalog.week, { weekStart: previousWeek, weekEnd: weekEnd(previousWeek), isCurrent: false });
+  assert.equal(historicalCatalog.purchases.find((item: any) => item.id === normal.id)?.status, 'purchased');
   assert.equal((await json(await request('/purchases/catalog/normal', admin.cookie))).purchases.some((item: any) => item.id === normal.id), false);
   assert.equal((await json(await request('/purchases/catalog/urgent', admin.cookie))).purchases.some((item: any) => item.id === urgent.id), false);
   assert.equal((await json(await request('/purchases/catalog/hazardous', hazard.cookie))).purchases.some((item: any) => item.id === dangerous.id), false);
@@ -152,7 +171,9 @@ try {
   assert.deepEqual(purchaseHistory.filter((item: any) => [normal.id, urgent.id, dangerous.id, dangerousUrgent.id].includes(item.id)).map((item: any) => item.status), ['purchased', 'purchased', 'purchased', 'purchased']);
   assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='purchase_purchased'`).get() as { count: number }).count, 4);
   assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.username='member-a' AND n.title='采购已完成'`).get() as { count: number }).count, 4);
-  console.log('PASS purchased lifecycle: permissions/version conflicts, realtime, applicant outcomes, audit, active-queue removal, retained history');
+  const finalWeeks = (await json(await request('/purchases/catalog/normal/weeks', admin.cookie))).weeks;
+  assert.equal(finalWeeks.find((week: any) => week.weekStart === previousWeek)?.purchasedCount, 1);
+  console.log('PASS purchased lifecycle: active-queue removal plus cross-week archive and purchased retention');
 
   const beforeMessages = (await json(await request('/notifications', alice.cookie))).notifications.length;
   await json(await request('/notifications/preferences', alice.cookie, { method: 'PUT', body: JSON.stringify({ category: 'inventory_inbound', enabled: false }) }));

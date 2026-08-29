@@ -5,6 +5,7 @@ import { transaction } from './database.js';
 import { asyncRoute, type AuthedRequest, HttpError, parseBody, roleRequired } from './http.js';
 import { decisionSchema, purchaseCreateSchema, purchaseUpdateSchema, versionSchema } from './validation.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
+import { beijingWeekStart, currentBeijingWeekStart, isValidWeekStart, weekEnd } from './purchase-weeks.js';
 import type { NotificationCategory, PurchaseStatus } from '../../shared/types.js';
 
 const selectPurchase = `SELECT p.*,u.username applicant_username,u.display_name applicant_name FROM purchases p JOIN users u ON u.id=p.applicant_id`;
@@ -25,12 +26,6 @@ function getPurchase(db: Db, id: number) {
 function requestRecipients(db: Db, requestType: string, category: NotificationCategory): number[] {
   const clause = requestType === 'urgent' ? `u.role='super_admin'` : `u.role IN ('normal_admin','super_admin')`;
   return eligibleUserIds(db, category, clause);
-}
-
-function mondayIso(): string {
-  const value = new Date(); const day = value.getUTCDay();
-  value.setUTCDate(value.getUTCDate() - (day === 0 ? 6 : day - 1)); value.setUTCHours(0, 0, 0, 0);
-  return value.toISOString();
 }
 
 function approvalTaskWhere(role: AuthedRequest['user']['role']): string | null {
@@ -60,6 +55,12 @@ function canMarkPurchased(role: AuthedRequest['user']['role'], hazardous: boolea
   return role === 'super_admin' || (hazardous ? role === 'hazardous_buyer' : role === 'normal_admin');
 }
 
+function normalCatalogWeek(value: unknown, current: string): string {
+  if (value === undefined) return current;
+  if (!isValidWeekStart(value)) throw new HttpError(400, '采购周次必须是格式严格的真实周一日期', 'VALIDATION_ERROR');
+  return value;
+}
+
 export function purchasesRouter(db: Db, io: SocketServer): Router {
   const router = Router();
   router.get('/tasks/summary', (request, res) => {
@@ -82,10 +83,26 @@ export function purchasesRouter(db: Db, io: SocketServer): Router {
     if (requestType) { where += ' AND p.request_type=?'; params.push(requestType); }
     res.json({ purchases: taskPurchases(db, where, params) });
   }));
-  router.get('/catalog/normal', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
-    const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='normal' AND p.hazardous=0 AND p.decided_at>=? ORDER BY p.id DESC`).all(mondayIso()) as Array<Record<string, unknown>>;
-    res.json({ purchases: rows.map(mapPurchase) });
+  router.get('/catalog/normal/weeks', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
+    const current = currentBeijingWeekStart();
+    const archived = db.prepare(`SELECT e.week_start,
+      COUNT(*) count,
+      SUM(CASE WHEN p.status='approved' THEN 1 ELSE 0 END) approved_count,
+      SUM(CASE WHEN p.status='purchased' THEN 1 ELSE 0 END) purchased_count
+      FROM purchase_weekly_entries e JOIN purchases p ON p.id=e.purchase_id
+      WHERE p.request_type='normal' AND p.hazardous=0
+      GROUP BY e.week_start`).all() as Array<{ week_start: string; count: number; approved_count: number; purchased_count: number }>;
+    const weeks = archived.map((row) => ({ weekStart: row.week_start, weekEnd: weekEnd(row.week_start), count: Number(row.count), approvedCount: Number(row.approved_count), purchasedCount: Number(row.purchased_count), isCurrent: row.week_start === current }));
+    if (!weeks.some(({ weekStart }) => weekStart === current)) weeks.push({ weekStart: current, weekEnd: weekEnd(current), count: 0, approvedCount: 0, purchasedCount: 0, isCurrent: true });
+    weeks.sort((left, right) => right.weekStart.localeCompare(left.weekStart));
+    res.json({ weeks });
   });
+  router.get('/catalog/normal', roleRequired('normal_admin', 'super_admin'), asyncRoute((request, res) => {
+    const current = currentBeijingWeekStart(); const selected = normalCatalogWeek(request.query.week, current);
+    const rows = db.prepare(`${selectPurchase} JOIN purchase_weekly_entries e ON e.purchase_id=p.id
+      WHERE e.week_start=? AND p.request_type='normal' AND p.hazardous=0 ORDER BY p.id DESC`).all(selected) as Array<Record<string, unknown>>;
+    res.json({ week: { weekStart: selected, weekEnd: weekEnd(selected), isCurrent: selected === current }, purchases: rows.map(mapPurchase) });
+  }));
   router.get('/catalog/urgent', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
     const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='urgent' AND p.hazardous=0 ORDER BY p.id DESC`).all() as Array<Record<string, unknown>>;
     res.json({ purchases: rows.map(mapPurchase) });
@@ -175,6 +192,9 @@ export function purchasesRouter(db: Db, io: SocketServer): Router {
       const result = db.prepare('UPDATE purchases SET status=?,approval_comment=?,decided_at=?,version=version+1,updated_at=? WHERE id=? AND version=?').run(input.decision, input.comment ?? null, now, now, id, input.version);
       if (!result.changes) throw new HttpError(409, '申请已被其他人修改', 'CONFLICT');
       const purchase = getPurchase(db, id);
+      if (input.decision === 'approved' && purchase.requestType === 'normal' && !purchase.hazardous) {
+        db.prepare('INSERT OR IGNORE INTO purchase_weekly_entries (purchase_id,week_start,added_at) VALUES (?,?,?)').run(id, beijingWeekStart(now), now);
+      }
       const labels = { approved: '通过', deferred: '推迟', rejected: '驳回' } as const;
       const audit = insertAudit(db, { actorId: req.user.id, action: `purchase_${input.decision}`, objectType: 'purchase', objectId: id, summary: `${labels[input.decision]}采购申请：${purchase.chemicalName}`, details: { comment: input.comment ?? null } }, now);
       const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'approval', 'u.id=?', [current.applicant.id]), category: 'approval', title: `采购申请${labels[input.decision]}`, body: `${purchase.chemicalName} 的申请已${labels[input.decision]}`, objectType: 'purchase', objectId: id }, now);

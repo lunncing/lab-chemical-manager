@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api, ApiError } from './api.js';
 import { CabinetBoard, Empty, Modal, Status } from './components.js';
-import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, UserView } from './types.js';
+import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, PurchaseWeekSummary, UserView } from './types.js';
 import { roles } from '../../shared/types.js';
 import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type ProcurementRequestType, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
@@ -10,6 +10,7 @@ import { ProcurementTypeFilter, PurchaseTable, type PurchaseAction } from './pur
 import { buildDirectInboundPayload, buildMovePayload, InboundOwnerDisplay, ShelfOptions } from './inventory-forms.js';
 import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
 import { accountRolePrompt, RoleOptions, roleLabel } from './role-labels.js';
+import { choosePurchaseWeek, purchaseWeekCatalogPath, PurchaseWeekPanel, shouldShowPurchaseWeekPanel } from './purchase-weekly-ui.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
@@ -71,17 +72,30 @@ async function performPurchaseAction(purchase: Purchase, actionName: PurchaseAct
 }
 
 const requestEmptyText: Record<PurchaseRequestViewMode, string> = {
-  all: '没有符合条件的采购申请', mine: '暂无我的采购申请', catalog_normal: '普通周目录暂无待采购药品',
+  all: '没有符合条件的采购申请', mine: '暂无我的采购申请', catalog_normal: '普通周目录暂无采购记录',
   catalog_urgent: '加急目录暂无待采购药品', catalog_hazardous: '危险品队列暂无待采购药品',
 };
 
 export function PurchasesView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
   const [purchases, setPurchases] = useState<Purchase[]>([]); const [mode, setMode] = useState<PurchaseRequestViewMode>('all'); const [status, setStatus] = useState(''); const [kind, setKind] = useState(''); const [hazardous, setHazardous] = useState(''); const [error, setError] = useState(''); const [showCreate, setShowCreate] = useState(false);
-  useEffect(() => { api<{ purchases: Purchase[] }>(purchaseRequestPath(mode, { status, kind, hazardous })).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, mode, status, kind, hazardous]);
+  const [weeks, setWeeks] = useState<PurchaseWeekSummary[]>([]); const [selectedWeekStart, setSelectedWeekStart] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    const load = shouldShowPurchaseWeekPanel(mode)
+      ? api<{ weeks: PurchaseWeekSummary[] }>('/purchases/catalog/normal/weeks').then(async (value) => {
+        const selected = choosePurchaseWeek(value.weeks, selectedWeekStart);
+        if (!cancelled) { setWeeks(value.weeks); if (selected !== selectedWeekStart) setSelectedWeekStart(selected); }
+        return api<{ purchases: Purchase[] }>(purchaseWeekCatalogPath(selected));
+      })
+      : api<{ purchases: Purchase[] }>(purchaseRequestPath(mode, { status, kind, hazardous }));
+    load.then((value) => { if (!cancelled) { setPurchases(value.purchases); setError(''); } }).catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
+    return () => { cancelled = true; };
+  }, [revision, mode, status, kind, hazardous, selectedWeekStart]);
   async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购</p><h1>采购申请</h1><p>全体成员可查看；修改、撤销和审批权限由服务端校验。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新建申请</button></header>
     <div className="tabs">{purchaseTabs(user.role, mode).map((tab) => <button key={tab.mode} aria-pressed={tab.pressed} onClick={() => setMode(tab.mode)}>{tab.label}</button>)}</div>
     {isPurchaseListMode(mode) && <div className="filters"><label>状态<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部</option>{purchaseStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>类型<select value={kind} onChange={(e) => setKind(e.target.value)}><option value="">全部</option><option value="normal">普通</option><option value="urgent">加急</option></select></label><label>危险品<select value={hazardous} onChange={(e) => setHazardous(e.target.value)}><option value="">全部</option><option value="true">是</option><option value="false">否</option></select></label></div>}
+    {shouldShowPurchaseWeekPanel(mode) && <PurchaseWeekPanel weeks={weeks} selectedWeekStart={selectedWeekStart} purchases={purchases} onChange={setSelectedWeekStart} />}
     {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={requestEmptyText[mode]} onAction={action} />
     {showCreate && <PurchaseCreate onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); onChanged(); }} />}
   </>;

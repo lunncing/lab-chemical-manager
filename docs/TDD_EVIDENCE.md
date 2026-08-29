@@ -1515,3 +1515,200 @@ git diff --check: exit 0; no whitespace errors (LF→CRLF notices only)
 bundle required: 注册 / 审批与普通采购人 / 提交日期 / 采购类型 — PRESENT
 bundle forbidden: 首测演示凭据 / 统一密码 / Demo1234! / 结构化详情 / 普通管理员 — ABSENT
 ```
+
+## 2026-08-30 — V1.4.0 普通采购周归档
+
+工作目录：`D:\hermes\worktrees\lab-chemical-manager-v1-4-weekly-archives`
+
+### Slice 1 — Asia/Shanghai 周边界与严格日期函数
+
+RED 命令：`npm test -- --run server/test/purchase-weeks.test.ts`
+
+```text
+FAIL  server/test/purchase-weeks.test.ts [ server/test/purchase-weeks.test.ts ]
+Error: Cannot find module '../src/purchase-weeks.js'
+Test Files  1 failed (1)
+     Tests  no tests
+退出码 1
+```
+
+GREEN 命令：`npm test -- --run server/test/purchase-weeks.test.ts`
+
+```text
+✓ server/test/purchase-weeks.test.ts (4 tests) 4ms
+Test Files  1 passed (1)
+     Tests  4 passed (4)
+退出码 0
+```
+
+### Slice 2 — additive table 与 V1.3 幂等回填
+
+RED 命令：`npm test -- --run server/test/database-weekly-archives.test.ts`
+
+```text
+❯ server/test/database-weekly-archives.test.ts (1 test | 1 failed) 378ms
+  × weekly purchase archive migration > adds only the archive table and idempotently backfills eligible V1.3 rows without changing legacy data 378ms
+    → Cannot read properties of undefined (reading 'sql')
+Test Files  1 failed (1)
+     Tests  1 failed (1)
+退出码 1
+```
+
+GREEN 命令：`npm test -- --run server/test/database-weekly-archives.test.ts`
+
+```text
+✓ server/test/database-weekly-archives.test.ts (1 test) 429ms
+  ✓ weekly purchase archive migration > adds only the archive table and idempotently backfills eligible V1.3 rows without changing legacy data 428ms
+Test Files  1 passed (1)
+     Tests  1 passed (1)
+退出码 0
+```
+
+### Slice 3 — 审批事务内原子归档
+
+RED 命令：`npm test -- --run server/test/purchase-archive-membership.test.ts`
+
+```text
+❯ server/test/purchase-archive-membership.test.ts (2 tests | 2 failed) 716ms
+  × approval-time weekly archive membership > archives only approved normal nonhazardous requests using their successful decision time 424ms
+    → expected [] to deeply equal [ { purchase_id: 1, …(2) } ]
+  × approval-time weekly archive membership > rolls back approval, audit, and notifications when archive insertion fails 291ms
+    → expected 200 to be 500 // Object.is equality
+Test Files  1 failed (1)
+     Tests  2 failed (2)
+退出码 1
+```
+
+GREEN 命令：`npm test -- --run server/test/purchase-archive-membership.test.ts`
+
+```text
+✓ server/test/purchase-archive-membership.test.ts (2 tests) 794ms
+  ✓ approval-time weekly archive membership > archives only approved normal nonhazardous requests using their successful decision time 491ms
+  ✓ approval-time weekly archive membership > rolls back approval, audit, and notifications when archive insertion fails 302ms
+Test Files  1 passed (1)
+     Tests  2 passed (2)
+退出码 0
+```
+
+### Slice 4–5 — weeks API 与 current/specified normal catalog
+
+RED 命令：`npm test -- --run server/test/purchase-weekly-api.test.ts`
+
+```text
+❯ server/test/purchase-weekly-api.test.ts (4 tests | 4 failed) 1161ms
+  × weekly normal purchase catalog APIs > always returns an empty current week and permits only normal/super admins 397ms
+    → expected 404 to be 403 // Object.is equality
+  × weekly normal purchase catalog APIs > returns descending archived weeks with approved and purchased statistics 237ms
+    → Unexpected token '<', "<!DOCTYPE "... is not valid JSON
+  × weekly normal purchase catalog APIs > serves current or specified archived membership, retaining purchased and excluding urgent/hazardous rows 298ms
+    → expected undefined to deeply equal { weekStart: '2026-08-24', …(2) }
+  × weekly normal purchase catalog APIs > rejects non-Mondays, impossible/loose dates, and repeated week queries with a Chinese 400 229ms
+    → expected 200 to be 400 // Object.is equality
+Test Files  1 failed (1)
+     Tests  4 failed (4)
+退出码 1
+```
+
+GREEN 命令：`npm test -- --run server/test/purchase-weekly-api.test.ts`
+
+```text
+✓ server/test/purchase-weekly-api.test.ts (4 tests) 1293ms
+Test Files  1 passed (1)
+     Tests  4 passed (4)
+退出码 0
+```
+
+### Slice 6 — 前端周选择器、统计与 tab 可见性
+
+RED 命令：`npm test -- --run client/src/purchase-weekly-ui.test.tsx`
+
+```text
+FAIL  client/src/purchase-weekly-ui.test.tsx [ client/src/purchase-weekly-ui.test.tsx ]
+Error: Cannot find module './purchase-weekly-ui.js'
+Test Files  1 failed (1)
+     Tests  no tests
+退出码 1
+```
+
+GREEN 命令：`npm test -- --run client/src/purchase-weekly-ui.test.tsx client/src/purchase-view.test.tsx client/src/purchase-tasks-ui.test.tsx`
+
+```text
+✓ client/src/purchase-view.test.tsx (5 tests) 4ms
+✓ client/src/purchase-weekly-ui.test.tsx (4 tests) 8ms
+✓ client/src/purchase-tasks-ui.test.tsx (6 tests) 29ms
+Test Files  3 passed (3)
+     Tests  15 passed (15)
+退出码 0
+```
+
+### Slice 7 — acceptance 跨周与 purchased retention
+
+RED 命令：`npm run acceptance`
+
+```text
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+
+true !== false
+
+actual: true
+expected: false
+退出码 1
+```
+
+额外 purchased-retention RED 命令：`npm test -- --run server/test/purchased.test.ts`
+
+```text
+❯ server/test/purchased.test.ts (2 tests | 1 failed) 1089ms
+  × approved to purchased transition > routes approval tasks, broadcasts completion, notifies the applicant, audits it, and removes it only from active queues 430ms
+    → expected [ 1 ] to not include 1
+Test Files  1 failed (1)
+     Tests  1 failed | 1 passed (2)
+退出码 1
+```
+
+GREEN 命令：`npm run acceptance`
+
+```text
+PASS health: empty in-memory SQLite database returns 200
+PASS roles: five demo logins and server-side 403/200 authorization
+PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login
+PASS inventory/realtime: inbound, cross-owner move, invalid shelf, discard, two Socket.IO clients
+PASS proxy inbound: pending scopes, authorization/version conflicts, atomic approval, reject/withdraw, realtime
+PASS purchase state machine: normal/urgent/hazardous, approve/defer/revise/reject/withdraw, forbidden urgent approval
+PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+PASS weekly archive rollover: approval membership, current empty week, descending historical statistics
+PASS purchased lifecycle: active-queue removal plus cross-week archive and purchased retention
+PASS preferences/audit: future category blocked while inventory and immutable public audit remain
+ACCEPTANCE OK (30 audit entries verified)
+退出码 0
+```
+
+### V1.3 正式数据库副本升级
+
+命令：
+
+```text
+npm run build:server
+node server/dist/server/scripts/verify-weekly-upgrade.js D:\hermes\worktrees\lab-chemical-manager-v1\data\lab-chemical-manager.sqlite
+```
+
+输出（源文件只读复制到系统临时目录，升级与二次启动仅作用于副本）：
+
+```text
+PASS V1.3 production database copy: 9 legacy tables unchanged; 2 eligible rows backfilled; second open idempotent
+退出码 0
+```
+
+### V1.4.0 最终验收
+
+```text
+npm test: 退出码 0；Test Files 24 passed (24)；Tests 75 passed (75)
+npm run lint: 退出码 0
+npm run build: 退出码 0；71 modules transformed；client bundle index-CQ0RDwaG.js / index-YyCuLsdp.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (30 audit entries verified)
+git diff --check: 退出码 0；无空白错误（仅 LF→CRLF 提示）
+package.json / package-lock.json diff: 无输出
+bundle required: 采购周次 / 本周 / 历史 — PRESENT
+```

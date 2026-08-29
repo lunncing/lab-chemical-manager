@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { hashPassword } from './security.js';
+import { beijingWeekStart } from './purchase-weeks.js';
 import type { Role, UserView } from '../../shared/types.js';
 
 export type Db = DatabaseSync;
@@ -36,6 +37,12 @@ CREATE TABLE IF NOT EXISTS purchases (
   approval_comment TEXT, version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, decided_at TEXT, withdrawn_at TEXT
 );
+CREATE TABLE IF NOT EXISTS purchase_weekly_entries (
+  id INTEGER PRIMARY KEY,
+  purchase_id INTEGER NOT NULL UNIQUE REFERENCES purchases(id),
+  week_start TEXT NOT NULL,
+  added_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_logs (
   id INTEGER PRIMARY KEY, actor_id INTEGER NOT NULL REFERENCES users(id), action TEXT NOT NULL,
   object_type TEXT NOT NULL, object_id TEXT NOT NULL, summary TEXT NOT NULL, details_json TEXT NOT NULL,
@@ -60,6 +67,7 @@ CREATE TABLE IF NOT EXISTS inbound_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_chemicals_location ON chemicals(status, cabinet, shelf);
 CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status, request_type, hazardous);
+CREATE INDEX IF NOT EXISTS idx_purchase_weekly_entries_week_start ON purchase_weekly_entries(week_start);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_target_status ON inbound_requests(target_user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_requester_status ON inbound_requests(requester_id, status, created_at);
@@ -70,8 +78,22 @@ export function openDatabase(path: string, seedDemo = true): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   db.exec(schema);
+  backfillWeeklyPurchaseEntries(db);
   if (seedDemo) seedDemoUsers(db);
   return db;
+}
+
+function backfillWeeklyPurchaseEntries(db: Db): void {
+  const rows = db.prepare(`SELECT p.id,p.decided_at FROM purchases p
+    LEFT JOIN purchase_weekly_entries e ON e.purchase_id=p.id
+    WHERE p.request_type='normal' AND p.hazardous=0 AND p.status IN ('approved','purchased')
+      AND p.decided_at IS NOT NULL AND e.purchase_id IS NULL`).all() as Array<{ id: number; decided_at: string }>;
+  if (!rows.length) return;
+  const insert = db.prepare('INSERT OR IGNORE INTO purchase_weekly_entries (purchase_id,week_start,added_at) VALUES (?,?,?)');
+  const addedAt = new Date().toISOString();
+  transaction(db, () => {
+    for (const row of rows) insert.run(row.id, beijingWeekStart(row.decided_at), addedAt);
+  });
 }
 
 function seedDemoUsers(db: Db): void {

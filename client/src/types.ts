@@ -11,6 +11,8 @@ export interface Purchase {
   id: number; chemicalName: string; specification: string; purpose: string; hazardous: boolean; requestType: PurchaseType;
   applicant: Person; status: PurchaseStatus; approvalComment: string | null; version: number; createdAt: string; updatedAt: string;
 }
+export interface PurchaseWeekInfo { weekStart: string; weekEnd: string; isCurrent: boolean; }
+export interface PurchaseWeekSummary extends PurchaseWeekInfo { count: number; approvedCount: number; purchasedCount: number; }
 export interface AuditLog { id: number; actor: Person; action: string; objectType: string; objectId: string; summary: string; details: unknown; createdAt: string; }
 export interface NotificationItem { id: number; userId: number; category: string; title: string; body: string; objectType: string | null; objectId: string | null; readAt: string | null; createdAt: string; }
 export interface InboundRequest {

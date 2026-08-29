@@ -86,7 +86,8 @@ describe('approved to purchased transition', () => {
     const procurement = await api(ctx.base, teacher, '/api/purchases/tasks/procurement');
     expect(((await procurement.json()).purchases as Array<{ id: number }>).map(({ id }) => id)).not.toContain(normal.id);
     const catalog = await api(ctx.base, admin, '/api/purchases/catalog/normal');
-    expect(((await catalog.json()).purchases as Array<{ id: number }>).map(({ id }) => id)).not.toContain(normal.id);
+    expect(((await catalog.json()).purchases as Array<{ id: number; status: string }>).find(({ id }) => id === normal.id)?.status).toBe('purchased');
+    expect((ctx.system.db.prepare('SELECT COUNT(*) count FROM purchase_weekly_entries WHERE purchase_id=?').get(normal.id) as { count: number }).count).toBe(1);
     const all = await api(ctx.base, member, '/api/purchases'); const mine = await api(ctx.base, member, '/api/purchases?scope=mine');
     expect(((await all.json()).purchases as Array<{ id: number; status: string }>).find(({ id }) => id === normal.id)?.status).toBe('purchased');
     expect(((await mine.json()).purchases as Array<{ id: number; status: string }>).find(({ id }) => id === normal.id)?.status).toBe('purchased');
