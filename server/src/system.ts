@@ -11,6 +11,7 @@ import { inventoryRouter } from './inventory.js';
 import { auditRouter } from './audit.js';
 import { notificationsRouter } from './notifications.js';
 import { purchasesRouter } from './purchases.js';
+import { inboundRequestsRouter } from './inbound-requests.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
 
 export interface RunningSystem { app: express.Express; httpServer: HttpServer; io: SocketServer; db: Db; close(): Promise<void>; }
@@ -73,6 +74,7 @@ export function createSystem(options: SystemOptions): RunningSystem {
 
   app.use('/api', authenticate);
   app.use('/api/chemicals', inventoryRouter(db, io));
+  app.use('/api/inbound-requests', inboundRequestsRouter(db, io));
   app.use('/api/audit-logs', auditRouter(db));
   app.use('/api/notifications', notificationsRouter(db, io));
   app.use('/api/purchases', purchasesRouter(db, io));

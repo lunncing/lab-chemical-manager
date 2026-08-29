@@ -50,9 +50,20 @@ CREATE TABLE IF NOT EXISTS notifications (
   title TEXT NOT NULL, body TEXT NOT NULL, object_type TEXT, object_id TEXT,
   read_at TEXT, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS inbound_requests (
+  id INTEGER PRIMARY KEY, requester_id INTEGER NOT NULL REFERENCES users(id), target_user_id INTEGER NOT NULL REFERENCES users(id),
+  name TEXT NOT NULL, specification TEXT NOT NULL, inbound_at TEXT NOT NULL,
+  cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B')), shelf INTEGER NOT NULL CHECK(shelf BETWEEN 1 AND 5),
+  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','withdrawn')) DEFAULT 'pending',
+  decision_comment TEXT, chemical_id INTEGER REFERENCES chemicals(id), version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, decided_at TEXT, withdrawn_at TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_chemicals_location ON chemicals(status, cabinet, shelf);
 CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status, request_type, hazardous);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
+CREATE INDEX IF NOT EXISTS idx_inbound_requests_target_status ON inbound_requests(target_user_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_inbound_requests_requester_status ON inbound_requests(requester_id, status, created_at);
+PRAGMA optimize;
 `;
 
 export function openDatabase(path: string, seedDemo = true): Db {

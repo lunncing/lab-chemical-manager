@@ -20,7 +20,7 @@ const chemicalSelect = `SELECT c.*, owner.username owner_username, owner.display
   operator.username operator_username, operator.display_name operator_name
   FROM chemicals c JOIN users owner ON owner.id=c.owner_id JOIN users operator ON operator.id=c.inbound_operator_id`;
 
-function getChemical(db: Db, id: number) {
+export function getChemical(db: Db, id: number) {
   const row = db.prepare(`${chemicalSelect} WHERE c.id=?`).get(id) as Record<string, unknown> | undefined;
   if (!row) throw new HttpError(404, '药品不存在', 'NOT_FOUND');
   return mapChemical(row);
@@ -53,9 +53,7 @@ export function inventoryRouter(db: Db, io: SocketServer): Router {
   }));
   router.post('/', asyncRoute((request, res) => {
     const req = request as AuthedRequest; const input = parseBody(chemicalCreateSchema, req.body); const now = new Date().toISOString();
-    const ownerId = input.ownerId ?? req.user.id;
-    const owner = db.prepare('SELECT id FROM users WHERE id=? AND active=1').get(ownerId);
-    if (!owner) throw new HttpError(400, '归属人不存在或已停用', 'VALIDATION_ERROR');
+    const ownerId = req.user.id;
     const committed = transaction(db, () => {
       const result = db.prepare(`INSERT INTO chemicals (name,specification,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,'active',?,?)`).run(input.name, input.specification, ownerId, req.user.id, input.inboundAt, input.cabinet, input.shelf, now, now);

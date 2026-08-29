@@ -33,8 +33,49 @@ function mondayIso(): string {
   return value.toISOString();
 }
 
+function approvalTaskWhere(role: AuthedRequest['user']['role']): string | null {
+  if (role === 'normal_admin') return `p.status IN ('pending_normal','deferred') AND p.request_type='normal'`;
+  if (role === 'super_admin') return `p.status IN ('pending_normal','pending_super','deferred')`;
+  return null;
+}
+
+function procurementTaskWhere(role: AuthedRequest['user']['role']): string | null {
+  if (role === 'normal_admin') return `p.status='approved' AND p.hazardous=0`;
+  if (role === 'hazardous_buyer') return `p.status='approved' AND p.hazardous=1`;
+  if (role === 'super_admin') return `p.status='approved'`;
+  return null;
+}
+
+function taskPurchases(db: Db, where: string): ReturnType<typeof mapPurchase>[] {
+  const rows = db.prepare(`${selectPurchase} WHERE ${where} ORDER BY p.id DESC`).all() as Array<Record<string, unknown>>;
+  return rows.map(mapPurchase);
+}
+
+function taskCount(db: Db, where: string | null): number {
+  if (!where) return 0;
+  return Number((db.prepare(`SELECT COUNT(*) count FROM purchases p WHERE ${where}`).get() as { count: number }).count);
+}
+
+function canMarkPurchased(role: AuthedRequest['user']['role'], hazardous: boolean): boolean {
+  return role === 'super_admin' || (hazardous ? role === 'hazardous_buyer' : role === 'normal_admin');
+}
+
 export function purchasesRouter(db: Db, io: SocketServer): Router {
   const router = Router();
+  router.get('/tasks/summary', (request, res) => {
+    const req = request as AuthedRequest;
+    res.json({ approvalCount: taskCount(db, approvalTaskWhere(req.user.role)), procurementCount: taskCount(db, procurementTaskWhere(req.user.role)) });
+  });
+  router.get('/tasks/approvals', asyncRoute((request, res) => {
+    const req = request as AuthedRequest; const where = approvalTaskWhere(req.user.role);
+    if (!where) throw new HttpError(403, '当前角色没有采购审批任务', 'FORBIDDEN');
+    res.json({ purchases: taskPurchases(db, where) });
+  }));
+  router.get('/tasks/procurement', asyncRoute((request, res) => {
+    const req = request as AuthedRequest; const where = procurementTaskWhere(req.user.role);
+    if (!where) throw new HttpError(403, '当前角色没有采购任务', 'FORBIDDEN');
+    res.json({ purchases: taskPurchases(db, where) });
+  }));
   router.get('/catalog/normal', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
     const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='normal' AND p.decided_at>=? ORDER BY p.id DESC`).all(mondayIso()) as Array<Record<string, unknown>>;
     res.json({ purchases: rows.map(mapPurchase) });
@@ -103,6 +144,21 @@ export function purchasesRouter(db: Db, io: SocketServer): Router {
     });
     emitCommitted(io, 'purchase:changed', committed.purchase, committed.audit, committed.notifications); res.json({ purchase: committed.purchase });
   }));
+  router.post('/:id/purchased', asyncRoute((request, res) => {
+    const req = request as AuthedRequest; const id = Number(req.params.id); const input = parseBody(versionSchema, req.body); const current = getPurchase(db, id);
+    if (!canMarkPurchased(req.user.role, current.hazardous)) throw new HttpError(403, '当前角色不能完成此采购任务', 'FORBIDDEN');
+    if (current.status !== 'approved') throw new HttpError(409, '只有已通过的申请可以标记为已采购', 'CONFLICT');
+    const now = new Date().toISOString();
+    const committed = transaction(db, () => {
+      const result = db.prepare(`UPDATE purchases SET status='purchased',version=version+1,updated_at=? WHERE id=? AND status='approved' AND version=?`).run(now, id, input.version);
+      if (!result.changes) throw new HttpError(409, '申请已被其他人修改', 'CONFLICT');
+      const purchase = getPurchase(db, id);
+      const audit = insertAudit(db, { actorId: req.user.id, action: 'purchase_purchased', objectType: 'purchase', objectId: id, summary: `标记已采购：${purchase.chemicalName}` }, now);
+      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'approval', 'u.id=?', [purchase.applicant.id]), category: 'approval', title: '采购已完成', body: `${purchase.chemicalName} 已采购完成`, objectType: 'purchase', objectId: id }, now);
+      return { purchase, audit, notifications };
+    });
+    emitCommitted(io, 'purchase:changed', committed.purchase, committed.audit, committed.notifications); res.json({ purchase: committed.purchase });
+  }));
   router.post('/:id/decision', asyncRoute((request, res) => {
     const req = request as AuthedRequest; const id = Number(req.params.id); const input = parseBody(decisionSchema, req.body); const current = getPurchase(db, id);
     if (current.requestType === 'urgent' && req.user.role !== 'super_admin') throw new HttpError(403, '加急申请仅超级管理员可审批', 'FORBIDDEN');
@@ -115,10 +171,12 @@ export function purchasesRouter(db: Db, io: SocketServer): Router {
       const purchase = getPurchase(db, id);
       const labels = { approved: '通过', deferred: '推迟', rejected: '驳回' } as const;
       const audit = insertAudit(db, { actorId: req.user.id, action: `purchase_${input.decision}`, objectType: 'purchase', objectId: id, summary: `${labels[input.decision]}采购申请：${purchase.chemicalName}`, details: { comment: input.comment ?? null } }, now);
-      const approvalIds = new Set<number>(eligibleUserIds(db, 'approval', `u.id=? OR u.role='super_admin'`, [current.applicant.id]));
-      if (input.decision === 'approved') for (const userId of eligibleUserIds(db, 'approval', `u.role='normal_admin'`)) approvalIds.add(userId);
-      const notifications = insertNotifications(db, { userIds: [...approvalIds], category: 'approval', title: `采购申请${labels[input.decision]}`, body: `${purchase.chemicalName} 的申请已${labels[input.decision]}`, objectType: 'purchase', objectId: id }, now);
-      if (input.decision === 'approved' && purchase.hazardous) notifications.push(...insertNotifications(db, { userIds: eligibleUserIds(db, 'hazardous', `u.role IN ('hazardous_buyer','super_admin')`), category: 'hazardous', title: '危险品采购任务', body: `${purchase.chemicalName} 已通过审批，请安排采购`, objectType: 'purchase', objectId: id }, now));
+      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'approval', 'u.id=?', [current.applicant.id]), category: 'approval', title: `采购申请${labels[input.decision]}`, body: `${purchase.chemicalName} 的申请已${labels[input.decision]}`, objectType: 'purchase', objectId: id }, now);
+      if (input.decision === 'approved') {
+        const taskCategory: NotificationCategory = purchase.hazardous ? 'hazardous' : 'approval';
+        const taskRoles = purchase.hazardous ? `u.role IN ('hazardous_buyer','super_admin')` : `u.role IN ('normal_admin','super_admin')`;
+        notifications.push(...insertNotifications(db, { userIds: eligibleUserIds(db, taskCategory, taskRoles), category: taskCategory, title: '待采购任务', body: `${purchase.chemicalName} 已通过审批，请安排采购`, objectType: 'purchase', objectId: id }, now));
+      }
       return { purchase, audit, notifications };
     });
     emitCommitted(io, 'purchase:changed', committed.purchase, committed.audit, committed.notifications); res.json({ purchase: committed.purchase });

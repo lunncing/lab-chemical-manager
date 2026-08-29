@@ -22,6 +22,29 @@ describe('inventory vertical slice', () => {
     expect((await notifications.json()).notifications[0].category).toBe('inventory_inbound');
   });
 
+  it('locks direct inbound ownership to the authenticated user and rejects legacy owner overrides', async () => {
+    const alice = await login(ctx.base, 'member-a');
+    const bob = await login(ctx.base, 'member-b');
+    const members = await api(ctx.base, alice, '/api/members');
+    const bobId = (await members.json()).users.find((user: { username: string }) => user.username === 'member-b').id;
+
+    const overridden = await api(ctx.base, alice, '/api/chemicals', { method: 'POST', body: JSON.stringify({
+      name: '越权入库', specification: '1 瓶', ownerId: bobId, inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: 2,
+    }) });
+    expect(overridden.status).toBe(400);
+
+    const direct = await api(ctx.base, alice, '/api/chemicals', { method: 'POST', body: JSON.stringify({
+      name: '本人入库', specification: '1 瓶', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: 2,
+    }) });
+    expect(direct.status).toBe(201);
+    expect((await direct.json()).chemical).toMatchObject({
+      owner: { username: 'member-a' }, inboundOperator: { username: 'member-a' },
+    });
+
+    const bobShelf = await api(ctx.base, bob, '/api/chemicals?search=越权入库');
+    expect((await bobShelf.json()).chemicals).toHaveLength(0);
+  });
+
   it('moves another member’s chemical, discards without deleting, and rejects invalid shelf data', async () => {
     const alice = await login(ctx.base, 'member-a');
     const bob = await login(ctx.base, 'member-b');

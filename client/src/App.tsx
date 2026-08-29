@@ -3,6 +3,7 @@ import { io, type Socket } from 'socket.io-client';
 import { api, ApiError } from './api.js';
 import { AccountsView, AuditView, InventoryView, NotificationsView, PurchasesView } from './views.js';
 import type { UserView } from './types.js';
+import { revisionEvents } from './realtime-events.js';
 
 type View = 'inventory' | 'purchases' | 'audit' | 'notifications' | 'accounts';
 
@@ -16,7 +17,8 @@ export function App() {
     api<{ unreadCount: number }>('/notifications/unread-count').then((value) => setUnread(value.unreadCount)).catch(() => undefined);
     const socket: Socket = io({ path: '/socket.io' });
     const changed = () => refresh(); const notification = () => { refresh(); setUnread((value) => value + 1); };
-    socket.on('chemical:changed', changed).on('purchase:changed', changed).on('audit:created', changed).on('notification:created', notification).on('notifications:read', changed).on('notifications:read-all', () => setUnread(0)).on('preferences:changed', changed);
+    for (const event of revisionEvents) socket.on(event, changed);
+    socket.on('notification:created', notification).on('notifications:read', changed).on('notifications:read-all', () => setUnread(0)).on('preferences:changed', changed);
     return () => { socket.close(); };
   }, [user, refresh]);
   if (checking) return <main className="center"><div className="loader" />正在连接实验室数据…</main>;
@@ -34,7 +36,7 @@ export function App() {
       {view === 'inventory' && <InventoryView user={user} revision={revision} onChanged={refresh} />}
       {view === 'purchases' && <PurchasesView user={user} revision={revision} onChanged={refresh} />}
       {view === 'audit' && <AuditView revision={revision} />}
-      {view === 'notifications' && <NotificationsView revision={revision} onChanged={(count) => { refresh(); if (count !== undefined) setUnread(count); }} />}
+      {view === 'notifications' && <NotificationsView user={user} revision={revision} onChanged={(count) => { if (count !== undefined) setUnread(count); else refresh(); }} />}
       {view === 'accounts' && user.role === 'super_admin' && <AccountsView revision={revision} onChanged={refresh} />}
     </main>
   </div>;

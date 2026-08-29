@@ -13,6 +13,7 @@ const categoryLabels: Record<NotificationCategory, string> = {
   approval: '审批结果',
   hazardous: '危险品',
   account: '账号',
+  proxy_inbound: '代入库',
 };
 
 export const notificationCategoryOptions = [

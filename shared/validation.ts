@@ -13,11 +13,18 @@ export const userUpdateSchema = z.object({
 
 export const chemicalCreateSchema = z.object({
   name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
-  ownerId: z.number().int().positive().optional(), inboundAt: z.iso.datetime(),
+  inboundAt: z.iso.datetime(),
   cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5),
 }).strict();
 export const moveSchema = z.object({ cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5), version: z.number().int().positive() }).strict();
 export const discardSchema = z.object({ confirmed: z.literal(true), reason: z.string().trim().max(500).optional(), version: z.number().int().positive() }).strict();
+export const inboundRequestCreateSchema = z.object({
+  targetUserId: z.number().int().positive(), name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
+  inboundAt: z.iso.datetime(), cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5),
+}).strict();
+export const inboundRequestDecisionSchema = z.object({
+  decision: z.enum(['approved', 'rejected']), comment: z.string().trim().max(1000).optional(), version: z.number().int().positive(),
+}).strict();
 
 export const purchaseCreateSchema = z.object({
   chemicalName: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),

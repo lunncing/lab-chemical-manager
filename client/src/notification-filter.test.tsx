@@ -29,7 +29,7 @@ describe('notification filters', () => {
     expect(filterNotifications(messages, 'inventory_move', 'all')).toEqual([]);
   });
 
-  it('provides all eight Chinese category labels and all read-state choices', () => {
+  it('provides all nine Chinese category labels and all read-state choices', () => {
     expect(notificationCategoryOptions).toEqual([
       { value: '', label: '全部类型' },
       { value: 'inventory_inbound', label: '药品入库' },
@@ -40,6 +40,7 @@ describe('notification filters', () => {
       { value: 'approval', label: '审批结果' },
       { value: 'hazardous', label: '危险品' },
       { value: 'account', label: '账号' },
+      { value: 'proxy_inbound', label: '代入库' },
     ]);
     expect(notificationReadOptions).toEqual([
       { value: 'all', label: '全部消息' },

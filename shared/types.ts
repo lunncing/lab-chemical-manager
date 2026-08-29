@@ -2,11 +2,12 @@ export const roles = ['member', 'normal_admin', 'super_admin', 'hazardous_buyer'
 export type Role = (typeof roles)[number];
 export const notificationCategories = [
   'inventory_inbound', 'inventory_move', 'inventory_discard',
-  'purchase_normal', 'purchase_urgent', 'approval', 'hazardous', 'account',
+  'purchase_normal', 'purchase_urgent', 'approval', 'hazardous', 'account', 'proxy_inbound',
 ] as const;
 export type NotificationCategory = (typeof notificationCategories)[number];
+export type InboundRequestStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
 export type PurchaseType = 'normal' | 'urgent';
-export type PurchaseStatus = 'pending_normal' | 'pending_super' | 'approved' | 'deferred' | 'rejected' | 'withdrawn';
+export type PurchaseStatus = 'pending_normal' | 'pending_super' | 'approved' | 'purchased' | 'deferred' | 'rejected' | 'withdrawn';
 
 export interface UserView {
   id: number; username: string; displayName: string; role: Role; active: boolean; demo: boolean; version: number;

@@ -1,4 +1,4 @@
-import type { PurchaseStatus, PurchaseType, Role, UserView } from '../../shared/types.js';
+import type { InboundRequestStatus, PurchaseStatus, PurchaseType, Role, UserView } from '../../shared/types.js';
 export type { UserView, Role };
 
 export interface Person { id: number; username: string; displayName: string; }
@@ -13,3 +13,8 @@ export interface Purchase {
 }
 export interface AuditLog { id: number; actor: Person; action: string; objectType: string; objectId: string; summary: string; details: unknown; createdAt: string; }
 export interface NotificationItem { id: number; userId: number; category: string; title: string; body: string; objectType: string | null; objectId: string | null; readAt: string | null; createdAt: string; }
+export interface InboundRequest {
+  id: number; requester: Person; targetUser: Person; name: string; specification: string; inboundAt: string;
+  cabinet: 'A' | 'B'; shelf: number; status: InboundRequestStatus; decisionComment: string | null; chemicalId: number | null;
+  version: number; createdAt: string; updatedAt: string; decidedAt: string | null; withdrawnAt: string | null;
+}

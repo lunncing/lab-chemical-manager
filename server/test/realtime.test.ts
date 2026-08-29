@@ -40,4 +40,21 @@ describe('authenticated Socket.IO realtime', () => {
     });
     expect(error.message).toContain('UNAUTHENTICATED');
   });
+
+  it('broadcasts inbound request creation and atomic approval changes', async () => {
+    const aliceCookie = await login(ctx.base, 'member-a'); const bobCookie = await login(ctx.base, 'member-b');
+    const members = await api(ctx.base, aliceCookie, '/api/members');
+    const bobId = (await members.json()).users.find((user: { username: string }) => user.username === 'member-b').id;
+    const alice = await connect(aliceCookie); const bob = await connect(bobCookie);
+    const aliceCreated = nextEvent<any>(alice, 'inbound-request:changed'); const bobCreated = nextEvent<any>(bob, 'inbound-request:changed');
+    const response = await api(ctx.base, aliceCookie, '/api/inbound-requests', { method: 'POST', body: JSON.stringify({
+      targetUserId: bobId, name: '实时代入库', specification: '1 瓶', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: 3,
+    }) });
+    expect(response.status).toBe(201); const created = (await response.json()).request;
+    expect((await aliceCreated).id).toBe(created.id); expect((await bobCreated).status).toBe('pending');
+
+    const approvedEvent = nextEvent<any>(alice, 'inbound-request:changed'); const chemicalEvent = nextEvent<any>(bob, 'chemical:changed');
+    const approved = await api(ctx.base, bobCookie, `/api/inbound-requests/${created.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: created.version }) });
+    expect(approved.status).toBe(200); expect((await approvedEvent).status).toBe('approved'); expect((await chemicalEvent).name).toBe('实时代入库');
+  });
 });

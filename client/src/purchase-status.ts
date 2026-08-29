@@ -4,6 +4,7 @@ const purchaseStatusLabels: Record<PurchaseStatus, string> = {
   pending_normal: '待普通管理员审批',
   pending_super: '待超级管理员审批',
   approved: '已通过',
+  purchased: '已采购',
   deferred: '已推迟',
   rejected: '已驳回',
   withdrawn: '已撤销',
