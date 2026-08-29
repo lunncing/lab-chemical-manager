@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundQueues, proxyInboundStatusLabel,
+  buildProxyInboundPayload, InboundModeControls, InboundRequestActions, pendingInboundCount, ProxyInboundLaunchers,
+  ProxyInboundQueueModal, proxyInboundStatusLabel,
 } from './inbound-requests-ui.js';
 import type { InboundRequest, UserView } from './types.js';
+import { InventoryView } from './views.js';
 
 const alice: UserView = { id: 4, username: 'member-a', displayName: '成员甲', role: 'member', active: true, demo: true, version: 1 };
 const bob: UserView = { id: 5, username: 'member-b', displayName: '成员乙', role: 'member', active: true, demo: true, version: 1 };
@@ -28,9 +30,37 @@ describe('proxy inbound front-end controls', () => {
       targetUserId: 5, name: '乙腈', specification: 'HPLC 4L', inboundAt: pending.inboundAt, cabinet: 'B', shelf: 2,
     });
     expect(proxyInboundStatusLabel('approved')).toBe('已同意');
-    const queues = renderToStaticMarkup(<ProxyInboundQueues incoming={[pending]} mine={[pending]} currentUserId={alice.id} onDecision={() => undefined} onWithdraw={() => undefined} />);
-    expect(queues).toContain('待我确认的代入库'); expect(queues).toContain('我发起的代入库'); expect(queues).toContain('撤销');
     const incomingActions = renderToStaticMarkup(<InboundRequestActions request={pending} currentUserId={bob.id} onDecision={() => undefined} onWithdraw={() => undefined} />);
     expect(incomingActions).toContain('同意'); expect(incomingActions).toContain('拒绝');
+  });
+
+  it('counts only pending requests and renders the three launchers in the required accessible order', () => {
+    const history = { ...pending, id: 12, status: 'approved' as const, name: '乙醇' };
+    expect(pendingInboundCount([pending, history])).toBe(1);
+    const html = renderToStaticMarkup(<ProxyInboundLaunchers incoming={[pending, history]} mine={[pending]} onQueue={() => undefined} onInbound={() => undefined} />);
+    expect(html).toContain('aria-label="查看待我确认的代入库，1 条待确认"');
+    expect(html).toContain('aria-label="查看我发起的代入库，1 条待确认"');
+    expect(html.indexOf('待我确认的代入库（1）')).toBeLessThan(html.indexOf('我发起的代入库（1）'));
+    expect(html.indexOf('我发起的代入库（1）')).toBeLessThan(html.indexOf('＋ 药品入库'));
+  });
+
+  it('uses an accessible modal with only the selected queue and its permitted actions', () => {
+    const history = { ...pending, id: 12, status: 'approved' as const, name: '乙醇' };
+    const incoming = renderToStaticMarkup(<ProxyInboundQueueModal scope="incoming" requests={[pending]} onClose={() => undefined} onDecision={() => undefined} onWithdraw={() => undefined} />);
+    expect(incoming).toContain('role="dialog"'); expect(incoming).toContain('aria-modal="true"');
+    expect(incoming).toContain('待我确认的代入库'); expect(incoming).not.toContain('我发起的代入库');
+    expect(incoming).toContain('同意'); expect(incoming).toContain('拒绝'); expect(incoming).not.toContain('撤销');
+
+    const mine = renderToStaticMarkup(<ProxyInboundQueueModal scope="mine" requests={[pending, history]} onClose={() => undefined} onDecision={() => undefined} onWithdraw={() => undefined} />);
+    expect(mine).toContain('我发起的代入库'); expect(mine).not.toContain('待我确认的代入库');
+    expect(mine).toContain('乙腈'); expect(mine).toContain('乙醇'); expect(mine).toContain('已同意');
+    expect(mine).toContain('撤销'); expect(mine).not.toMatch(/<button[^>]*>同意<\/button>/); expect(mine).not.toMatch(/<button[^>]*>拒绝<\/button>/);
+  });
+
+  it('places launchers before search and cabinets without a permanently rendered queue', () => {
+    const html = renderToStaticMarkup(<InventoryView user={alice} revision={0} onChanged={() => undefined} />);
+    expect(html.indexOf('待我确认的代入库（0）')).toBeLessThan(html.indexOf('搜索药品'));
+    expect(html.indexOf('我发起的代入库（0）')).toBeLessThan(html.indexOf('cabinet-grid'));
+    expect(html).not.toContain('proxy-request-list');
   });
 });

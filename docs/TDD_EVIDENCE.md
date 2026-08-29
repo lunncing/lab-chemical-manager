@@ -186,6 +186,224 @@ GREEN 输出（退出码 0）：
       Tests  2 passed (2)
 ```
 
+## 2026-08-30 — V1.2.1 信息架构 / 导航调整
+
+工作目录：`D:\hermes\worktrees\lab-chemical-manager-v1-2-1-nav`
+
+基线：`8c680d27d5d406f89583426bc25372cb75afed08`
+
+分支：`fix/task-navigation-proxy-buttons-v1.2.1`
+
+开始前 `git status --short` 无输出；基线 `npm test` 为 16 个测试文件、37 项测试全部通过。
+
+### Slice 1 — 一级任务导航角色矩阵 / count / 安全回退
+
+先仅增加角色导航测试，再执行 RED：
+
+```text
+npm test -- --run client/src/App.test.tsx
+```
+
+RED 输出（退出码 1）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+❯ client/src/App.test.tsx (5 tests | 3 failed) 14ms
+  ✓ front-end critical behavior > renders two cabinets with five ordered, clickable shelves and chemical entries 7ms
+  ✓ front-end critical behavior > maps role affordances to the same approval model used by the server 0ms
+  × role-filtered primary navigation > omits task navigation DOM entirely for members 4ms
+    → Element type is invalid: expected a string (for built-in components) or a class/function (for composite components) but got: undefined.
+  × role-filtered primary navigation > shows only procurement to hazardous buyers and both counted tasks to administrators 0ms
+    → Element type is invalid: expected a string (for built-in components) or a class/function (for composite components) but got: undefined.
+  × role-filtered primary navigation > uses the server summary path, refreshes on purchase revisions, and falls back from forbidden views 2ms
+    → expected undefined to be '/purchases/tasks/summary' // Object.is equality
+
+Test Files  1 failed (1)
+     Tests  3 failed | 2 passed (5)
+Duration  675ms
+```
+
+实现 App 级 summary、角色过滤导航和安全 view 后执行 GREEN：
+
+```text
+npm test -- --run client/src/App.test.tsx
+```
+
+GREEN 输出（退出码 0）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+✓ client/src/App.test.tsx (5 tests) 10ms
+
+Test Files  1 passed (1)
+     Tests  5 passed (5)
+Duration  661ms
+```
+
+### Slice 2 — 采购表 capability / 申请 tabs / 一级任务 endpoint
+
+先仅修改采购视图与表格测试，再执行 RED：
+
+```text
+npm test -- --run client/src/purchase-view.test.tsx client/src/purchase-tasks-ui.test.tsx
+```
+
+RED 输出（退出码 1）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+❯ client/src/purchase-view.test.tsx (4 tests | 2 failed) 7ms
+  × purchase view modes > keeps task queues out of purchase-request tabs and marks the current catalog tab as pressed 5ms
+    → expected [ 'all', 'mine', 'approvals', …(3) ] to deeply equal [ 'all', 'mine', …(2) ]
+  × purchase view modes > defines top-level task pages with their exact server endpoints and Chinese empty states 0ms
+    → (0 , purchaseTaskDefinition) is not a function
+❯ client/src/purchase-tasks-ui.test.tsx (4 tests | 2 failed) 10ms
+  × purchase task UI > maps each view to an exact operation capability set 3ms
+    → (0 , purchaseTableCapabilities) is not a function
+  × purchase task UI > omits the operation column for all/catalog and renders only mode-specific actions elsewhere 2ms
+    → Element type is invalid: expected a string (for built-in components) or a class/function (for composite components) but got: undefined.
+
+Test Files  2 failed (2)
+     Tests  4 failed | 4 passed (8)
+Duration  554ms
+```
+
+首次实现后有一项测试把状态文字“已通过”误判成“通过”操作按钮；仅将该测试收窄为匹配 `<button>通过</button>`，未修改生产行为。随后执行聚焦 GREEN：
+
+```text
+npm test -- --run client/src/purchase-view.test.tsx client/src/purchase-tasks-ui.test.tsx client/src/App.test.tsx
+```
+
+GREEN 输出（退出码 0）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+✓ client/src/purchase-view.test.tsx (4 tests) 4ms
+✓ client/src/purchase-tasks-ui.test.tsx (4 tests) 11ms
+✓ client/src/App.test.tsx (5 tests) 10ms
+
+Test Files  3 passed (3)
+     Tests  13 passed (13)
+Duration  696ms
+```
+
+该 slice 后 `npm run lint` 退出码 0。
+
+### Slice 3 — 代入库顶部 launcher / 单队列 modal / 柜体后不常驻
+
+先仅增加 pending count、按钮顺序/aria、modal scope/action 与 Inventory DOM placement 测试，再执行 RED：
+
+```text
+npm test -- --run client/src/inbound-requests-ui.test.tsx
+```
+
+RED 输出（退出码 1）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+❯ client/src/inbound-requests-ui.test.tsx (5 tests | 3 failed) 20ms
+  × proxy inbound front-end controls > counts only pending requests and renders the three launchers in the required accessible order 3ms
+    → (0 , pendingInboundCount) is not a function
+  × proxy inbound front-end controls > uses an accessible modal with only the selected queue and its permitted actions 2ms
+    → Element type is invalid: expected a string (for built-in components) or a class/function (for composite components) but got: undefined.
+  × proxy inbound front-end controls > places launchers before search and cabinets without a permanently rendered queue 6ms
+    → expected InventoryView markup not to contain 'proxy-request-list'
+
+Test Files  1 failed (1)
+     Tests  3 failed | 2 passed (5)
+Duration  651ms
+```
+
+实现顶部 launcher、pending count 和使用现有 `Modal` 的单队列弹层后执行 GREEN：
+
+```text
+npm test -- --run client/src/inbound-requests-ui.test.tsx client/src/App.test.tsx
+```
+
+GREEN 输出（退出码 0）：
+
+```text
+RUN  v3.2.7 D:/hermes/worktrees/lab-chemical-manager-v1-2-1-nav
+
+✓ client/src/inbound-requests-ui.test.tsx (5 tests) 13ms
+✓ client/src/App.test.tsx (5 tests) 10ms
+
+Test Files  2 passed (2)
+     Tests  10 passed (10)
+Duration  681ms
+```
+
+### V1.2.1 全量验收
+
+`npm test`（退出码 0）：
+
+```text
+Test Files  16 passed (16)
+     Tests  46 passed (46)
+Duration  3.18s (transform 836ms, setup 0ms, collect 6.11s, tests 8.68s, environment 3ms, prepare 1.57s)
+```
+
+即保留原 37 项并新增 9 项测试。
+
+`npm run lint`（退出码 0）：
+
+```text
+> lab-chemical-manager-v1@1.0.0 lint
+> tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit
+```
+
+`npm run build`（退出码 0）：
+
+```text
+> lab-chemical-manager-v1@1.0.0 build
+> npm run build:server && npm run build:client
+
+> lab-chemical-manager-v1@1.0.0 build:server
+> tsc -p server/tsconfig.json
+
+> lab-chemical-manager-v1@1.0.0 build:client
+> vite build --config client/vite.config.ts
+
+vite v7.3.6 building client environment for production...
+✓ 69 modules transformed.
+dist/index.html                   0.44 kB │ gzip:  0.34 kB
+dist/assets/index-CC9pqaf-.css   10.42 kB │ gzip:  3.08 kB
+dist/assets/index-CHW8wuSW.js   269.25 kB │ gzip: 83.30 kB
+✓ built in 610ms
+```
+
+`npm run acceptance`（退出码 0）：
+
+```text
+PASS health: empty in-memory SQLite database returns 200
+PASS roles: five demo logins and server-side 403/200 authorization
+PASS inventory/realtime: inbound, cross-owner move, invalid shelf, discard, two Socket.IO clients
+PASS proxy inbound: pending scopes, authorization/version conflicts, atomic approval, reject/withdraw, realtime
+PASS purchase state machine: normal/urgent/hazardous, approve/defer/revise/reject/withdraw, forbidden urgent approval
+PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+PASS purchased lifecycle: permissions/version conflicts, realtime, applicant outcomes, audit, active-queue removal, retained history
+PASS preferences/audit: future category blocked while inventory and immutable public audit remain
+ACCEPTANCE OK (26 audit entries verified)
+```
+
+生产 bundle 标签检查（退出码 0）：
+
+```text
+PASS 待审批
+PASS 待采购
+PASS 待我确认的代入库
+PASS 我发起的代入库
+PASS 我的审批 absent
+```
+
+`git diff --check` 退出码 0、无空白错误；仅报告允许范围内已修改文件的 LF→CRLF 工作区提示。未修改 server、database、shared API enum、package/lockfile、认证或用户 SQLite 数据；未 commit。
+
 ## 2026-08-30 — V1.2 Phase B（§3、§4 采购实时、Slices 6–8）
 
 工作树：`D:/hermes/worktrees/lab-chemical-manager-v1-2-proxy-procurement`

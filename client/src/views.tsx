@@ -1,31 +1,31 @@
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api, ApiError } from './api.js';
-import { CabinetBoard, canApprove, Empty, Modal, Status } from './components.js';
+import { CabinetBoard, Empty, Modal, Status } from './components.js';
 import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, UserView } from './types.js';
 import { roles } from '../../shared/types.js';
-import { isPurchaseListMode, purchaseRequestPath, purchaseTabs, type PurchaseViewMode } from './purchase-view.js';
+import { isPurchaseListMode, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
-import { purchaseStatusLabel, purchaseStatusOptions } from './purchase-status.js';
-import { canMarkPurchased, PurchaseTaskSummary, type PurchaseTaskSummaryValue } from './purchase-tasks-ui.js';
+import { purchaseStatusOptions } from './purchase-status.js';
+import { PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
 import { buildDirectInboundPayload, buildMovePayload, InboundOwnerDisplay, ShelfOptions } from './inventory-forms.js';
-import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundQueues } from './inbound-requests-ui.js';
+import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
 
 export function InventoryView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
   const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState('');
-  const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
+  const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
   useEffect(() => { Promise.all([
     api<{ chemicals: Chemical[] }>(`/chemicals${search ? `?search=${encodeURIComponent(search)}` : ''}`), api<{ users: UserView[] }>('/members'),
     api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming'), api<{ requests: InboundRequest[] }>('/inbound-requests?scope=mine'),
   ]).then(([stock, people, incomingRequests, myRequests]) => { setChemicals(stock.chemicals); setMembers(people.users); setIncoming(incomingRequests.requests); setMine(myRequests.requests); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, search]);
   async function decide(request: InboundRequest, decision: 'approved' | 'rejected') { const comment = prompt(decision === 'approved' ? '同意说明（可选）' : '拒绝说明（可选）') ?? undefined; try { await api(`/inbound-requests/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ decision, comment: comment || undefined, version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
   async function withdraw(request: InboundRequest) { if (!confirm(`确认撤销“${request.name}”的代入库申请？`)) return; try { await api(`/inbound-requests/${request.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
-  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。柜层由上到下为 1–5。</p></div><button className="primary" onClick={() => setShowInbound(true)}>＋ 药品入库</button></header>
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。柜层由上到下为 1–5。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
     <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
     {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={setSelected} />
-    <ProxyInboundQueues incoming={incoming} mine={mine} currentUserId={user.id} onDecision={decide} onWithdraw={withdraw} />
+    {proxyQueue && <ProxyInboundQueueModal scope={proxyQueue} requests={proxyQueue === 'incoming' ? incoming : mine} onClose={() => setProxyQueue(null)} onDecision={decide} onWithdraw={withdraw} />}
     {showInbound && <InboundModal user={user} members={members} onClose={() => setShowInbound(false)} onDone={(message) => { setShowInbound(false); setSuccess(message ?? '入库成功'); onChanged(); }} />}
     {selected && <ChemicalModal chemical={selected} onClose={() => setSelected(null)} onDone={() => { setSelected(null); onChanged(); }} />}
   </>;
@@ -61,25 +61,37 @@ function ChemicalModal({ chemical, onClose, onDone }: { chemical: Chemical; onCl
   </Modal>;
 }
 
+async function performPurchaseAction(purchase: Purchase, actionName: PurchaseAction) {
+  if (actionName === 'edit') { const purpose = prompt('修改用途说明', purchase.purpose); if (!purpose) return false; await api(`/purchases/${purchase.id}`, { method: 'PATCH', body: JSON.stringify({ purpose, version: purchase.version }) }); }
+  else if (actionName === 'withdraw') { if (!confirm('确认撤销此申请？')) return false; await api(`/purchases/${purchase.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
+  else if (actionName === 'purchased') { if (!confirm(`确认“${purchase.chemicalName}”已采购？`)) return false; await api(`/purchases/${purchase.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
+  else { const comment = actionName === 'approved' ? (prompt('审批意见（可选）') ?? '') : prompt(actionName === 'deferred' ? '推迟说明（必填）' : '驳回说明（必填）'); if (comment === null || (actionName !== 'approved' && !comment.trim())) return false; await api(`/purchases/${purchase.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: actionName, comment: comment || undefined, version: purchase.version }) }); }
+  return true;
+}
+
+const requestEmptyText: Record<PurchaseRequestViewMode, string> = {
+  all: '没有符合条件的采购申请', mine: '暂无我的采购申请', catalog_normal: '普通周目录暂无待采购药品',
+  catalog_urgent: '加急目录暂无待采购药品', catalog_hazardous: '危险品队列暂无待采购药品',
+};
+
 export function PurchasesView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
-  const [purchases, setPurchases] = useState<Purchase[]>([]); const [summary, setSummary] = useState<PurchaseTaskSummaryValue>({ approvalCount: 0, procurementCount: 0 }); const [mode, setMode] = useState<PurchaseViewMode>('all'); const [status, setStatus] = useState(''); const [kind, setKind] = useState(''); const [hazardous, setHazardous] = useState(''); const [error, setError] = useState(''); const [showCreate, setShowCreate] = useState(false);
+  const [purchases, setPurchases] = useState<Purchase[]>([]); const [mode, setMode] = useState<PurchaseRequestViewMode>('all'); const [status, setStatus] = useState(''); const [kind, setKind] = useState(''); const [hazardous, setHazardous] = useState(''); const [error, setError] = useState(''); const [showCreate, setShowCreate] = useState(false);
   useEffect(() => { api<{ purchases: Purchase[] }>(purchaseRequestPath(mode, { status, kind, hazardous })).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, mode, status, kind, hazardous]);
-  useEffect(() => { api<PurchaseTaskSummaryValue>('/purchases/tasks/summary').then(setSummary).catch((reason) => setError(messageOf(reason))); }, [revision, user.role]);
-  async function action(purchase: Purchase, actionName: 'edit' | 'withdraw' | 'approved' | 'deferred' | 'rejected' | 'purchased') {
-    try {
-      if (actionName === 'edit') { const purpose = prompt('修改用途说明', purchase.purpose); if (!purpose) return; await api(`/purchases/${purchase.id}`, { method: 'PATCH', body: JSON.stringify({ purpose, version: purchase.version }) }); }
-      else if (actionName === 'withdraw') { if (!confirm('确认撤销此申请？')) return; await api(`/purchases/${purchase.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
-      else if (actionName === 'purchased') { if (!confirm(`确认“${purchase.chemicalName}”已采购？`)) return; await api(`/purchases/${purchase.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
-      else { const comment = actionName === 'approved' ? (prompt('审批意见（可选）') ?? '') : prompt(actionName === 'deferred' ? '推迟说明（必填）' : '驳回说明（必填）'); if (comment === null || (actionName !== 'approved' && !comment.trim())) return; await api(`/purchases/${purchase.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: actionName, comment: comment || undefined, version: purchase.version }) }); }
-      onChanged();
-    } catch (reason) { setError(messageOf(reason)); }
-  }
+  async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购</p><h1>采购申请</h1><p>全体成员可查看；修改、撤销和审批权限由服务端校验。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新建申请</button></header>
-    <PurchaseTaskSummary summary={summary} />
-    <div className="tabs">{purchaseTabs(user.role, mode, summary).map((tab) => <button key={tab.mode} aria-pressed={tab.pressed} onClick={() => setMode(tab.mode)}>{tab.label}</button>)}</div>
+    <div className="tabs">{purchaseTabs(user.role, mode).map((tab) => <button key={tab.mode} aria-pressed={tab.pressed} onClick={() => setMode(tab.mode)}>{tab.label}</button>)}</div>
     {isPurchaseListMode(mode) && <div className="filters"><label>状态<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部</option>{purchaseStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>类型<select value={kind} onChange={(e) => setKind(e.target.value)}><option value="">全部</option><option value="normal">普通</option><option value="urgent">加急</option></select></label><label>危险品<select value={hazardous} onChange={(e) => setHazardous(e.target.value)}><option value="">全部</option><option value="true">是</option><option value="false">否</option></select></label></div>}
-    {error && <Status kind="error">{error}</Status>}{purchases.length ? <div className="table-wrap"><table><thead><tr><th>药品</th><th>申请人</th><th>类型</th><th>状态</th><th>用途 / 意见</th><th>操作</th></tr></thead><tbody>{purchases.map((purchase) => <tr key={purchase.id}><td><strong>{purchase.chemicalName}</strong><small>{purchase.specification}</small>{purchase.hazardous && <span className="badge danger-badge">危险品</span>}</td><td>{purchase.applicant.displayName}</td><td>{purchase.requestType === 'urgent' ? '加急' : '普通'}</td><td><span className={`badge status-${purchase.status}`}>{purchaseStatusLabel(purchase.status)}</span></td><td>{purchase.purpose}{purchase.approvalComment && <small>审批：{purchase.approvalComment}</small>}</td><td><div className="row-actions">{purchase.applicant.id === user.id && ['pending_normal','pending_super','deferred'].includes(purchase.status) && <><button onClick={() => action(purchase, 'edit')}>修改</button><button onClick={() => action(purchase, 'withdraw')}>撤销</button></>}{canApprove(user.role, purchase.requestType) && ['pending_normal','pending_super','deferred'].includes(purchase.status) && <><button className="approve" onClick={() => action(purchase, 'approved')}>通过</button><button onClick={() => action(purchase, 'deferred')}>推迟</button><button className="danger-text" onClick={() => action(purchase, 'rejected')}>驳回</button></>}{purchase.status === 'approved' && canMarkPurchased(user.role, purchase.hazardous) && <button className="approve" onClick={() => action(purchase, 'purchased')}>已采购</button>}</div></td></tr>)}</tbody></table></div> : <Empty>没有符合条件的采购申请</Empty>}
+    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={requestEmptyText[mode]} onAction={action} />
     {showCreate && <PurchaseCreate onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); onChanged(); }} />}
+  </>;
+}
+
+export function PurchaseTaskView({ mode, user, revision, onChanged }: { mode: PurchaseTaskViewMode; user: UserView; revision: number; onChanged: () => void }) {
+  const definition = purchaseTaskDefinition(mode); const [purchases, setPurchases] = useState<Purchase[]>([]); const [error, setError] = useState('');
+  useEffect(() => { api<{ purchases: Purchase[] }>(definition.path).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [definition.path, revision]);
+  async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购任务</p><h1>{definition.title}</h1><p>{mode === 'approvals' ? '处理需要您决定的采购申请。' : '确认已完成采购的药品。'}</p></div></header>
+    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={definition.empty} onAction={action} />
   </>;
 }
 

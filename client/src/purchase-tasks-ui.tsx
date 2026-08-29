@@ -1,9 +1,56 @@
 import type { Role } from './types.js';
+import type { Purchase } from './types.js';
+import type { PurchaseViewMode } from './purchase-view.js';
+import { Empty } from './components.js';
+import { purchaseStatusLabel } from './purchase-status.js';
 
 export interface PurchaseTaskSummaryValue { approvalCount: number; procurementCount: number; }
 
 export function canMarkPurchased(role: Role, hazardous: boolean): boolean {
   return role === 'super_admin' || (hazardous ? role === 'hazardous_buyer' : role === 'normal_admin');
+}
+
+export type PurchaseAction = 'edit' | 'withdraw' | 'approved' | 'deferred' | 'rejected' | 'purchased';
+
+const tableCapabilities: Record<PurchaseViewMode, PurchaseAction[]> = {
+  all: [],
+  mine: ['edit', 'withdraw'],
+  approvals: ['approved', 'deferred', 'rejected'],
+  procurement: ['purchased'],
+  catalog_normal: [],
+  catalog_urgent: [],
+  catalog_hazardous: [],
+};
+
+export function purchaseTableCapabilities(mode: PurchaseViewMode): PurchaseAction[] { return tableCapabilities[mode]; }
+
+const actionLabels: Record<PurchaseAction, string> = {
+  edit: '修改', withdraw: '撤销', approved: '通过', deferred: '推迟', rejected: '驳回', purchased: '已采购',
+};
+
+function visibleActions(purchase: Purchase, mode: PurchaseViewMode, currentUserId: number) {
+  const capabilities = purchaseTableCapabilities(mode);
+  if (mode === 'mine') {
+    return purchase.applicant.id === currentUserId && ['pending_normal', 'pending_super', 'deferred'].includes(purchase.status) ? capabilities : [];
+  }
+  if (mode === 'approvals') return ['pending_normal', 'pending_super', 'deferred'].includes(purchase.status) ? capabilities : [];
+  if (mode === 'procurement') return purchase.status === 'approved' ? capabilities : [];
+  return [];
+}
+
+export function PurchaseTable({ purchases, mode, currentUserId, empty, onAction }: {
+  purchases: Purchase[]; mode: PurchaseViewMode; currentUserId: number; empty: string;
+  onAction: (purchase: Purchase, action: PurchaseAction) => void;
+}) {
+  if (!purchases.length) return <Empty>{empty}</Empty>;
+  const hasActions = purchaseTableCapabilities(mode).length > 0;
+  return <div className="table-wrap"><table><thead><tr><th>药品</th><th>申请人</th><th>类型</th><th>状态</th><th>用途 / 意见</th>{hasActions && <th>操作</th>}</tr></thead><tbody>{purchases.map((purchase) => <tr key={purchase.id}>
+    <td><strong>{purchase.chemicalName}</strong><small>{purchase.specification}</small>{purchase.hazardous && <span className="badge danger-badge">危险品</span>}</td>
+    <td>{purchase.applicant.displayName}</td><td>{purchase.requestType === 'urgent' ? '加急' : '普通'}</td>
+    <td><span className={`badge status-${purchase.status}`}>{purchaseStatusLabel(purchase.status)}</span></td>
+    <td>{purchase.purpose}{purchase.approvalComment && <small>审批：{purchase.approvalComment}</small>}</td>
+    {hasActions && <td><div className="row-actions">{visibleActions(purchase, mode, currentUserId).map((action) => <button type="button" className={action === 'approved' || action === 'purchased' ? 'approve' : action === 'rejected' ? 'danger-text' : undefined} key={action} onClick={() => onAction(purchase, action)}>{actionLabels[action]}</button>)}</div></td>}
+  </tr>)}</tbody></table></div>;
 }
 
 export function PurchaseTaskSummary({ summary }: { summary: PurchaseTaskSummaryValue }) {

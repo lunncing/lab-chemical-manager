@@ -1,5 +1,6 @@
 import type { InboundRequest, UserView } from './types.js';
 import { buildDirectInboundPayload } from './inventory-forms.js';
+import { Modal } from './components.js';
 
 export function buildProxyInboundPayload(fields: Parameters<typeof buildDirectInboundPayload>[0], targetUserIdValue: unknown) {
   const targetUserId = Number(targetUserIdValue);
@@ -35,23 +36,47 @@ export function InboundRequestActions({ request, currentUserId, onDecision, onWi
   return null;
 }
 
-function RequestList({ title, requests, empty, currentUserId, onDecision, onWithdraw }: {
-  title: string; requests: InboundRequest[]; empty: string; currentUserId: number;
+export type ProxyInboundQueueScope = 'incoming' | 'mine';
+
+export function pendingInboundCount(requests: InboundRequest[]) { return requests.filter((request) => request.status === 'pending').length; }
+
+export function ProxyInboundLaunchers({ incoming, mine, onQueue, onInbound }: {
+  incoming: InboundRequest[]; mine: InboundRequest[]; onQueue: (scope: ProxyInboundQueueScope) => void; onInbound: () => void;
+}) {
+  const incomingCount = pendingInboundCount(incoming); const mineCount = pendingInboundCount(mine);
+  return <div className="page-actions">
+    <button type="button" aria-label={`查看待我确认的代入库，${incomingCount} 条待确认`} onClick={() => onQueue('incoming')}>待我确认的代入库（{incomingCount}）</button>
+    <button type="button" aria-label={`查看我发起的代入库，${mineCount} 条待确认`} onClick={() => onQueue('mine')}>我发起的代入库（{mineCount}）</button>
+    <button type="button" className="primary" onClick={onInbound}>＋ 药品入库</button>
+  </div>;
+}
+
+function QueueActions({ scope, request, onDecision, onWithdraw }: {
+  scope: ProxyInboundQueueScope; request: InboundRequest;
   onDecision: (request: InboundRequest, decision: 'approved' | 'rejected') => void; onWithdraw: (request: InboundRequest) => void;
 }) {
-  return <section className="proxy-request-list"><h2>{title}</h2>{requests.length ? <div className="table-wrap"><table><thead><tr><th>药品</th><th>人员</th><th>位置</th><th>状态</th><th>操作</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
-    <td><strong>{request.name}</strong><small>{request.specification}</small></td><td>{request.requester.id === currentUserId ? `交给 ${request.targetUser.displayName}` : `来自 ${request.requester.displayName}`}</td>
+  if (request.status !== 'pending') return null;
+  if (scope === 'incoming') return <div className="row-actions"><button type="button" className="approve" onClick={() => onDecision(request, 'approved')}>同意</button><button type="button" className="danger-text" onClick={() => onDecision(request, 'rejected')}>拒绝</button></div>;
+  return <div className="row-actions"><button type="button" onClick={() => onWithdraw(request)}>撤销</button></div>;
+}
+
+function RequestList({ scope, requests, empty, onDecision, onWithdraw }: {
+  scope: ProxyInboundQueueScope; requests: InboundRequest[]; empty: string;
+  onDecision: (request: InboundRequest, decision: 'approved' | 'rejected') => void; onWithdraw: (request: InboundRequest) => void;
+}) {
+  return <section className="proxy-request-list">{requests.length ? <div className="table-wrap"><table><thead><tr><th>药品</th><th>人员</th><th>位置</th><th>状态</th><th>操作</th></tr></thead><tbody>{requests.map((request) => <tr key={request.id}>
+    <td><strong>{request.name}</strong><small>{request.specification}</small></td><td>{scope === 'mine' ? `交给 ${request.targetUser.displayName}` : `来自 ${request.requester.displayName}`}</td>
     <td>{request.cabinet} 柜 {request.shelf} 层</td><td><span className={`badge status-${request.status}`}>{proxyInboundStatusLabel(request.status)}</span>{request.decisionComment && <small>{request.decisionComment}</small>}</td>
-    <td><InboundRequestActions request={request} currentUserId={currentUserId} onDecision={onDecision} onWithdraw={onWithdraw} /></td>
+    <td><QueueActions scope={scope} request={request} onDecision={onDecision} onWithdraw={onWithdraw} /></td>
   </tr>)}</tbody></table></div> : <p className="compact-empty">{empty}</p>}</section>;
 }
 
-export function ProxyInboundQueues({ incoming, mine, currentUserId, onDecision, onWithdraw }: {
-  incoming: InboundRequest[]; mine: InboundRequest[]; currentUserId: number;
+export function ProxyInboundQueueModal({ scope, requests, onClose, onDecision, onWithdraw }: {
+  scope: ProxyInboundQueueScope; requests: InboundRequest[]; onClose: () => void;
   onDecision: (request: InboundRequest, decision: 'approved' | 'rejected') => void; onWithdraw: (request: InboundRequest) => void;
 }) {
-  return <section className="proxy-queues" aria-label="代入库申请">
-    <RequestList title="待我确认的代入库" requests={incoming} empty="暂无待确认申请" currentUserId={currentUserId} onDecision={onDecision} onWithdraw={onWithdraw} />
-    <RequestList title="我发起的代入库" requests={mine} empty="暂无发起记录" currentUserId={currentUserId} onDecision={onDecision} onWithdraw={onWithdraw} />
-  </section>;
+  const incoming = scope === 'incoming';
+  return <Modal title={incoming ? '待我确认的代入库' : '我发起的代入库'} onClose={onClose}>
+    <RequestList scope={scope} requests={requests} empty={incoming ? '暂无待确认申请' : '暂无发起记录'} onDecision={onDecision} onWithdraw={onWithdraw} />
+  </Modal>;
 }

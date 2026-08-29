@@ -1,7 +1,8 @@
 import type { Role } from './types.js';
-import type { PurchaseTaskSummaryValue } from './purchase-tasks-ui.js';
 
 export type PurchaseViewMode = 'all' | 'mine' | 'approvals' | 'procurement' | 'catalog_normal' | 'catalog_urgent' | 'catalog_hazardous';
+export type PurchaseRequestViewMode = Exclude<PurchaseViewMode, 'approvals' | 'procurement'>;
+export type PurchaseTaskViewMode = Extract<PurchaseViewMode, 'approvals' | 'procurement'>;
 
 export interface PurchaseFilters {
   status?: string;
@@ -9,11 +10,9 @@ export interface PurchaseFilters {
   hazardous?: string;
 }
 
-const tabDefinitions: Array<{ mode: PurchaseViewMode; label: string; roles?: Role[]; count?: keyof PurchaseTaskSummaryValue }> = [
+const tabDefinitions: Array<{ mode: PurchaseRequestViewMode; label: string; roles?: Role[] }> = [
   { mode: 'all', label: '全部申请' },
   { mode: 'mine', label: '我的申请' },
-  { mode: 'approvals', label: '我的审批', roles: ['normal_admin', 'super_admin'], count: 'approvalCount' },
-  { mode: 'procurement', label: '待采购', roles: ['normal_admin', 'hazardous_buyer', 'super_admin'], count: 'procurementCount' },
   { mode: 'catalog_normal', label: '普通周目录', roles: ['normal_admin', 'super_admin'] },
   { mode: 'catalog_urgent', label: '加急目录', roles: ['normal_admin', 'super_admin'] },
   { mode: 'catalog_hazardous', label: '危险品队列', roles: ['hazardous_buyer', 'super_admin'] },
@@ -35,8 +34,15 @@ export function purchaseRequestPath(mode: PurchaseViewMode, filters: PurchaseFil
   return `/purchases?${query}`;
 }
 
-export function purchaseTabs(role: Role, current: PurchaseViewMode, summary: PurchaseTaskSummaryValue = { approvalCount: 0, procurementCount: 0 }) {
+export function purchaseTabs(role: Role, current: PurchaseRequestViewMode) {
   return tabDefinitions
     .filter(({ roles }) => !roles || roles.includes(role))
-    .map(({ mode, label, count }) => ({ mode, label: count ? `${label}（${summary[count]}）` : label, pressed: mode === current }));
+    .map(({ mode, label }) => ({ mode, label, pressed: mode === current }));
 }
+
+const taskDefinitions: Record<PurchaseTaskViewMode, { title: string; path: string; empty: string }> = {
+  approvals: { title: '待审批', path: '/purchases/tasks/approvals', empty: '暂无待审批的采购申请' },
+  procurement: { title: '待采购', path: '/purchases/tasks/procurement', empty: '暂无待采购的药品' },
+};
+
+export function purchaseTaskDefinition(mode: PurchaseTaskViewMode) { return taskDefinitions[mode]; }

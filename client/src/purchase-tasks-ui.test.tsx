@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { canMarkPurchased, PurchaseTaskSummary } from './purchase-tasks-ui.js';
+import { canMarkPurchased, PurchaseTable, PurchaseTaskSummary, purchaseTableCapabilities } from './purchase-tasks-ui.js';
+import type { Purchase } from './types.js';
+
+const purchase: Purchase = {
+  id: 17, chemicalName: '乙腈', specification: 'HPLC 4L', purpose: '流动相', hazardous: false, requestType: 'normal',
+  applicant: { id: 4, username: 'member-a', displayName: '成员甲' }, status: 'pending_normal', approvalComment: null,
+  version: 1, createdAt: '2026-08-30T08:00:00.000Z', updatedAt: '2026-08-30T08:00:00.000Z',
+};
 
 describe('purchase task UI', () => {
   it('renders explicit server-derived approval and procurement reminders', () => {
@@ -17,5 +24,38 @@ describe('purchase task UI', () => {
     expect(canMarkPurchased('hazardous_buyer', true)).toBe(true);
     expect(canMarkPurchased('super_admin', false)).toBe(true);
     expect(canMarkPurchased('super_admin', true)).toBe(true);
+  });
+
+  it('maps each view to an exact operation capability set', () => {
+    expect(purchaseTableCapabilities('all')).toEqual([]);
+    expect(purchaseTableCapabilities('catalog_normal')).toEqual([]);
+    expect(purchaseTableCapabilities('catalog_urgent')).toEqual([]);
+    expect(purchaseTableCapabilities('catalog_hazardous')).toEqual([]);
+    expect(purchaseTableCapabilities('mine')).toEqual(['edit', 'withdraw']);
+    expect(purchaseTableCapabilities('approvals')).toEqual(['approved', 'deferred', 'rejected']);
+    expect(purchaseTableCapabilities('procurement')).toEqual(['purchased']);
+  });
+
+  it('omits the operation column for all/catalog and renders only mode-specific actions elsewhere', () => {
+    const render = (mode: Parameters<typeof PurchaseTable>[0]['mode'], item: Purchase = purchase) => renderToStaticMarkup(
+      <PurchaseTable purchases={[item]} mode={mode} currentUserId={4} empty="空" onAction={() => undefined} />,
+    );
+
+    for (const mode of ['all', 'catalog_normal', 'catalog_urgent', 'catalog_hazardous'] as const) {
+      expect(render(mode)).not.toContain('操作');
+    }
+
+    const mine = render('mine');
+    expect(mine).toContain('操作'); expect(mine).toContain('修改'); expect(mine).toContain('撤销');
+    expect(mine).not.toContain('通过'); expect(mine).not.toContain('已采购');
+
+    const approvals = render('approvals');
+    expect(approvals).toContain('通过'); expect(approvals).toContain('推迟'); expect(approvals).toContain('驳回');
+    expect(approvals).not.toContain('修改'); expect(approvals).not.toContain('撤销'); expect(approvals).not.toContain('已采购');
+
+    const approvedPurchase = { ...purchase, status: 'approved' as const };
+    const procurement = render('procurement', approvedPurchase);
+    expect(procurement).toContain('已采购');
+    expect(procurement).not.toMatch(/<button[^>]*>通过<\/button>/); expect(procurement).not.toContain('修改'); expect(procurement).not.toContain('撤销');
   });
 });
