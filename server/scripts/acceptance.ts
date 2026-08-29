@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { io as connectSocket, type Socket } from 'socket.io-client';
 import { createSystem } from '../src/system.js';
+import { verifyPassword } from '../src/security.js';
 
 const system = createSystem({ databasePath: ':memory:', seedDemo: true });
 const sockets: Socket[] = [];
@@ -17,6 +18,11 @@ async function login(username: string) {
   const response = await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username, password: 'Demo1234!' }) });
   assert.equal(response.status, 200, `${username} login`); const body = await response.json();
   return { cookie: response.headers.get('set-cookie')!.split(';')[0]!, user: body.user };
+}
+async function register(input: Record<string, unknown>) {
+  const response = await request('/auth/register', undefined, { method: 'POST', body: JSON.stringify(input) });
+  const body = await response.clone().json() as { user?: any };
+  return { response, cookie: response.headers.get('set-cookie')?.split(';')[0] ?? '', user: body.user };
 }
 async function json(response: Response, status = 200) { assert.equal(response.status, status, await response.clone().text()); return response.status === 204 ? undefined : response.json(); }
 async function connect(cookie: string) {
@@ -43,6 +49,17 @@ try {
   assert.deepEqual([teacher.user.role, admin.user.role, hazard.user.role, alice.user.role], ['super_admin', 'normal_admin', 'hazardous_buyer', 'member']);
   assert.equal((await request('/users', alice.cookie)).status, 403); assert.equal((await request('/users', teacher.cookie)).status, 200);
   console.log('PASS roles: five demo logins and server-side 403/200 authorization');
+
+  const registered = await register({ username: 'acceptance-member', displayName: '验收注册成员', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!' });
+  assert.equal(registered.response.status, 201); assert.equal(registered.user.role, 'member'); assert.equal(registered.user.active, true); assert.equal(registered.user.demo, false);
+  assert.equal((await json(await request('/auth/me', registered.cookie))).user.id, registered.user.id);
+  const registeredRow = system.db.prepare('SELECT * FROM users WHERE id=?').get(registered.user.id) as Record<string, unknown>;
+  assert(verifyPassword('Acceptance123!', String(registeredRow.password_hash)));
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='account_register' AND object_id=?`).get(String(registered.user.id)) as { count: number }).count, 1);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.username='teacher' AND n.category='account' AND n.object_id=?`).get(String(registered.user.id)) as { count: number }).count, 1);
+  assert.equal((await register({ username: 'role-injection', displayName: '越权注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', role: 'super_admin' })).response.status, 400);
+  assert.equal((await register({ username: 'acceptance-member', displayName: '重复注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!' })).response.status, 409);
+  console.log('PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login');
 
   const aliceSocket = await connect(alice.cookie); const bobSocket = await connect(bob.cookie);
   const firstRealtime = event(aliceSocket, 'chemical:changed'); const secondRealtime = event(bobSocket, 'chemical:changed');
@@ -75,34 +92,38 @@ try {
   console.log('PASS proxy inbound: pending scopes, authorization/version conflicts, atomic approval, reject/withdraw, realtime');
 
   const normal = await createPurchase(alice.cookie, '普通试剂', 'normal'); const urgent = await createPurchase(alice.cookie, '加急试剂', 'urgent');
-  const dangerous = await createPurchase(alice.cookie, '叠氮化钠', 'normal', true); const rejectable = await createPurchase(bob.cookie, '驳回试剂', 'normal');
+  const dangerous = await createPurchase(alice.cookie, '叠氮化钠', 'normal', true); const dangerousUrgent = await createPurchase(alice.cookie, '加急危险试剂', 'urgent', true); const rejectable = await createPurchase(bob.cookie, '驳回试剂', 'normal');
   assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 3, procurementCount: 0 });
-  assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 4, procurementCount: 0 });
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 5, procurementCount: 0 });
   const adminApprovals = (await json(await request('/purchases/tasks/approvals', admin.cookie))).purchases.map((item: any) => item.id);
   const teacherApprovals = (await json(await request('/purchases/tasks/approvals', teacher.cookie))).purchases.map((item: any) => item.id);
   assert(adminApprovals.includes(normal.id) && adminApprovals.includes(dangerous.id) && adminApprovals.includes(rejectable.id) && !adminApprovals.includes(urgent.id));
-  assert(teacherApprovals.includes(normal.id) && teacherApprovals.includes(urgent.id) && teacherApprovals.includes(dangerous.id) && teacherApprovals.includes(rejectable.id));
+  assert(teacherApprovals.includes(normal.id) && teacherApprovals.includes(urgent.id) && teacherApprovals.includes(dangerous.id) && teacherApprovals.includes(dangerousUrgent.id) && teacherApprovals.includes(rejectable.id));
   assert.equal((await request(`/purchases/${urgent.id}/decision`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: urgent.version }) })).status, 403);
   const approvedNormal = await decide(admin.cookie, normal, 'approved');
   let deferredUrgent = await decide(teacher.cookie, urgent, 'deferred', '等待预算');
   deferredUrgent = (await json(await request(`/purchases/${urgent.id}`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ purpose: '补充后的加急用途', version: deferredUrgent.version }) }))).purchase;
   assert.equal(deferredUrgent.status, 'pending_super'); assert.equal(deferredUrgent.approvalComment, null);
-  const approvedUrgent = await decide(teacher.cookie, deferredUrgent, 'approved'); const approvedDangerous = await decide(admin.cookie, dangerous, 'approved');
+  const approvedUrgent = await decide(teacher.cookie, deferredUrgent, 'approved'); const approvedDangerous = await decide(admin.cookie, dangerous, 'approved'); const approvedDangerousUrgent = await decide(teacher.cookie, dangerousUrgent, 'approved');
   const rejected = await decide(admin.cookie, rejectable, 'rejected', '不符合采购要求');
-  assert.equal(approvedNormal.status, 'approved'); assert.equal(approvedUrgent.status, 'approved'); assert.equal(approvedDangerous.status, 'approved'); assert.equal(rejected.status, 'rejected');
+  assert.equal(approvedNormal.status, 'approved'); assert.equal(approvedUrgent.status, 'approved'); assert.equal(approvedDangerous.status, 'approved'); assert.equal(approvedDangerousUrgent.status, 'approved'); assert.equal(rejected.status, 'rejected');
   const withdrawable = await createPurchase(bob.cookie, '撤销试剂', 'normal'); const withdrawn = (await json(await request(`/purchases/${withdrawable.id}/withdraw`, bob.cookie, { method: 'POST', body: JSON.stringify({ version: withdrawable.version }) }))).purchase; assert.equal(withdrawn.status, 'withdrawn');
   console.log('PASS purchase state machine: normal/urgent/hazardous, approve/defer/revise/reject/withdraw, forbidden urgent approval');
 
   assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 0, procurementCount: 2 });
-  assert.deepEqual(await json(await request('/purchases/tasks/summary', hazard.cookie)), { approvalCount: 0, procurementCount: 1 });
-  assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 0, procurementCount: 3 });
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', hazard.cookie)), { approvalCount: 0, procurementCount: 2 });
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 0, procurementCount: 4 });
   assert.deepEqual(await json(await request('/purchases/tasks/summary', alice.cookie)), { approvalCount: 0, procurementCount: 0 });
   assert.equal((await request('/purchases/tasks/approvals', hazard.cookie)).status, 403); assert.equal((await request('/purchases/tasks/procurement', alice.cookie)).status, 403);
   const adminProcurement = (await json(await request('/purchases/tasks/procurement', admin.cookie))).purchases.map((item: any) => item.id);
   const hazardProcurement = (await json(await request('/purchases/tasks/procurement', hazard.cookie))).purchases.map((item: any) => item.id);
   const teacherProcurement = (await json(await request('/purchases/tasks/procurement', teacher.cookie))).purchases.map((item: any) => item.id);
   assert(adminProcurement.includes(normal.id) && adminProcurement.includes(urgent.id) && !adminProcurement.includes(dangerous.id));
-  assert.deepEqual(hazardProcurement, [dangerous.id]); assert(teacherProcurement.includes(normal.id) && teacherProcurement.includes(urgent.id) && teacherProcurement.includes(dangerous.id));
+  assert.deepEqual(hazardProcurement, [dangerousUrgent.id, dangerous.id]); assert(teacherProcurement.includes(normal.id) && teacherProcurement.includes(urgent.id) && teacherProcurement.includes(dangerous.id) && teacherProcurement.includes(dangerousUrgent.id));
+  assert.deepEqual((await json(await request('/purchases/tasks/procurement?requestType=normal', hazard.cookie))).purchases.map((item: any) => item.id), [dangerous.id]);
+  assert.deepEqual((await json(await request('/purchases/tasks/procurement?requestType=urgent', hazard.cookie))).purchases.map((item: any) => item.id), [dangerousUrgent.id]);
+  assert.equal((await request('/purchases/tasks/procurement?requestType=invalid', admin.cookie)).status, 400);
+  assert.equal((await request('/purchases/tasks/procurement?requestType=normal&requestType=urgent', admin.cookie)).status, 400);
   const procurementTaskRecipients = (purchaseId: number) => (system.db.prepare(`SELECT u.username FROM notifications n JOIN users u ON u.id=n.user_id
     WHERE n.object_type='purchase' AND n.object_id=? AND n.title='待采购任务' ORDER BY u.username`).all(String(purchaseId)) as Array<{ username: string }>).map(({ username }) => username);
   assert.deepEqual(procurementTaskRecipients(normal.id), ['admin', 'teacher']); assert.deepEqual(procurementTaskRecipients(dangerous.id), ['hazard', 'teacher']);
@@ -111,24 +132,26 @@ try {
   const normalCatalog = (await json(await request('/purchases/catalog/normal', admin.cookie))).purchases;
   const urgentCatalog = (await json(await request('/purchases/catalog/urgent', admin.cookie))).purchases;
   const dangerousQueue = (await json(await request('/purchases/catalog/hazardous', hazard.cookie))).purchases;
-  assert(normalCatalog.some((item: any) => item.id === normal.id)); assert(urgentCatalog.some((item: any) => item.id === urgent.id)); assert(dangerousQueue.some((item: any) => item.id === dangerous.id));
+  assert(normalCatalog.some((item: any) => item.id === normal.id)); assert(!normalCatalog.some((item: any) => item.id === dangerous.id));
+  assert(urgentCatalog.some((item: any) => item.id === urgent.id)); assert(!urgentCatalog.some((item: any) => item.id === dangerousUrgent.id));
+  assert(dangerousQueue.some((item: any) => item.id === dangerous.id)); assert(dangerousQueue.some((item: any) => item.id === dangerousUrgent.id));
   console.log('PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue');
 
   assert.equal((await request(`/purchases/${normal.id}/purchased`, alice.cookie, { method: 'POST', body: JSON.stringify({ version: approvedNormal.version }) })).status, 403);
   assert.equal((await request(`/purchases/${dangerous.id}/purchased`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: approvedDangerous.version }) })).status, 403);
   assert.equal((await request(`/purchases/${normal.id}/purchased`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: 1 }) })).status, 409);
   const purchasedEvent = event(aliceSocket, 'purchase:changed'); const purchasedNormal = await markPurchased(admin.cookie, approvedNormal); assert.equal((await purchasedEvent).status, 'purchased');
-  const purchasedDangerous = await markPurchased(hazard.cookie, approvedDangerous); const purchasedUrgent = await markPurchased(teacher.cookie, approvedUrgent);
-  assert.equal(purchasedNormal.status, 'purchased'); assert.equal(purchasedDangerous.status, 'purchased'); assert.equal(purchasedUrgent.status, 'purchased');
+  const purchasedDangerous = await markPurchased(hazard.cookie, approvedDangerous); const purchasedUrgent = await markPurchased(teacher.cookie, approvedUrgent); const purchasedDangerousUrgent = await markPurchased(hazard.cookie, approvedDangerousUrgent);
+  assert.equal(purchasedNormal.status, 'purchased'); assert.equal(purchasedDangerous.status, 'purchased'); assert.equal(purchasedUrgent.status, 'purchased'); assert.equal(purchasedDangerousUrgent.status, 'purchased');
   assert.equal((await request(`/purchases/${normal.id}/purchased`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: purchasedNormal.version }) })).status, 409);
   assert.equal((await json(await request('/purchases/tasks/procurement', teacher.cookie))).purchases.length, 0);
   assert.equal((await json(await request('/purchases/catalog/normal', admin.cookie))).purchases.some((item: any) => item.id === normal.id), false);
   assert.equal((await json(await request('/purchases/catalog/urgent', admin.cookie))).purchases.some((item: any) => item.id === urgent.id), false);
   assert.equal((await json(await request('/purchases/catalog/hazardous', hazard.cookie))).purchases.some((item: any) => item.id === dangerous.id), false);
   const purchaseHistory = (await json(await request('/purchases?scope=mine', alice.cookie))).purchases;
-  assert.deepEqual(purchaseHistory.filter((item: any) => [normal.id, urgent.id, dangerous.id].includes(item.id)).map((item: any) => item.status), ['purchased', 'purchased', 'purchased']);
-  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='purchase_purchased'`).get() as { count: number }).count, 3);
-  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.username='member-a' AND n.title='采购已完成'`).get() as { count: number }).count, 3);
+  assert.deepEqual(purchaseHistory.filter((item: any) => [normal.id, urgent.id, dangerous.id, dangerousUrgent.id].includes(item.id)).map((item: any) => item.status), ['purchased', 'purchased', 'purchased', 'purchased']);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='purchase_purchased'`).get() as { count: number }).count, 4);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.username='member-a' AND n.title='采购已完成'`).get() as { count: number }).count, 4);
   console.log('PASS purchased lifecycle: permissions/version conflicts, realtime, applicant outcomes, audit, active-queue removal, retained history');
 
   const beforeMessages = (await json(await request('/notifications', alice.cookie))).notifications.length;
@@ -136,7 +159,7 @@ try {
   await json(await request('/chemicals', bob.cookie, { method: 'POST', body: JSON.stringify({ name: '偏好屏蔽验证', specification: '1 瓶', inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 5 }) }), 201);
   const afterMessages = (await json(await request('/notifications', alice.cookie))).notifications;
   assert.equal(afterMessages.length, beforeMessages); assert((await json(await request('/chemicals?search=偏好屏蔽验证', alice.cookie))).chemicals.length === 1);
-  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 3);
+  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4);
   console.log('PASS preferences/audit: future category blocked while inventory and immutable public audit remain');
   console.log(`ACCEPTANCE OK (${logs.length} audit entries verified)`);
 } finally {

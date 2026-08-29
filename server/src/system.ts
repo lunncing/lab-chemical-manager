@@ -6,7 +6,7 @@ import { Server as SocketServer } from 'socket.io';
 import { openDatabase, transaction, type Db, userView } from './database.js';
 import { createSessionToken, digestToken, hashPassword, verifyPassword } from './security.js';
 import { asyncRoute, type AuthedRequest, HttpError, parseBody, roleRequired } from './http.js';
-import { loginSchema, userCreateSchema, userUpdateSchema } from './validation.js';
+import { loginSchema, registrationSchema, userCreateSchema, userUpdateSchema } from './validation.js';
 import { inventoryRouter } from './inventory.js';
 import { auditRouter } from './audit.js';
 import { notificationsRouter } from './notifications.js';
@@ -19,6 +19,14 @@ export interface SystemOptions { databasePath: string; seedDemo?: boolean; cooki
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
   return header?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+}
+
+function sessionCookie(token: string, expires: Date, secure: boolean): string {
+  return `lab_session=${token}; HttpOnly; SameSite=Lax; Path=/; Expires=${expires.toUTCString()}${secure ? '; Secure' : ''}`;
+}
+
+function isUsernameConflict(error: unknown): boolean {
+  return error instanceof Error && error.message.includes('UNIQUE constraint failed: users.username');
 }
 
 export function createSystem(options: SystemOptions): RunningSystem {
@@ -60,9 +68,32 @@ export function createSystem(options: SystemOptions): RunningSystem {
     const token = createSessionToken();
     const expires = new Date(Date.now() + (options.sessionDays ?? 7) * 86_400_000);
     db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(digestToken(token), Number(row.id), expires.toISOString());
-    const secure = options.cookieSecure ? '; Secure' : '';
-    res.setHeader('Set-Cookie', `lab_session=${token}; HttpOnly; SameSite=Lax; Path=/; Expires=${expires.toUTCString()}${secure}`);
+    res.setHeader('Set-Cookie', sessionCookie(token, expires, Boolean(options.cookieSecure)));
     res.json({ user: userView(row) });
+  }));
+  app.post('/api/auth/register', asyncRoute((req, res) => {
+    const input = parseBody(registrationSchema, req.body);
+    const now = new Date().toISOString();
+    const token = createSessionToken();
+    const expires = new Date(Date.now() + (options.sessionDays ?? 7) * 86_400_000);
+    let committed;
+    try {
+      committed = transaction(db, () => {
+        const result = db.prepare(`INSERT INTO users (username,display_name,role,password_hash,active,demo,created_at,updated_at)
+          VALUES (?,?,'member',?,1,0,?,?)`).run(input.username, input.displayName, hashPassword(input.password), now, now);
+        const user = userView(db.prepare('SELECT * FROM users WHERE id=?').get(Number(result.lastInsertRowid)) as Record<string, unknown>);
+        db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?,?,?)').run(digestToken(token), user.id, expires.toISOString());
+        const audit = insertAudit(db, { actorId: user.id, action: 'account_register', objectType: 'user', objectId: user.id, summary: `新成员注册：${user.username}`, details: { username: user.username, displayName: user.displayName, role: 'member' } }, now);
+        const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'account', `u.role='super_admin'`), category: 'account', title: '新成员注册', body: `${user.displayName} (@${user.username}) 已注册`, objectType: 'user', objectId: user.id }, now);
+        return { user, audit, notifications };
+      });
+    } catch (error) {
+      if (isUsernameConflict(error)) throw new HttpError(409, '用户名已存在', 'CONFLICT');
+      throw error;
+    }
+    emitCommitted(io, 'user:changed', committed.user, committed.audit, committed.notifications);
+    res.setHeader('Set-Cookie', sessionCookie(token, expires, Boolean(options.cookieSecure)));
+    res.status(201).json({ user: committed.user });
   }));
   app.post('/api/auth/logout', authenticate, (req, res) => {
     const token = cookieValue(req.headers.cookie, 'lab_session');

@@ -60,4 +60,29 @@ describe('role-specific purchase task queues', () => {
     expect((await api(ctx.base, alice, '/api/purchases/tasks/approvals')).status).toBe(403);
     expect((await api(ctx.base, alice, '/api/purchases/tasks/procurement')).status).toBe(403);
   });
+
+  it('filters procurement tasks by a strictly validated bound request type', async () => {
+    const alice = await login(ctx.base, 'member-a'); const admin = await login(ctx.base, 'admin');
+    const teacher = await login(ctx.base, 'teacher'); const hazard = await login(ctx.base, 'hazard');
+    const normal = await decide(admin, await create(alice, '筛选普通'), 'approved');
+    const urgent = await decide(teacher, await create(alice, '筛选加急', 'urgent'), 'approved');
+    const hazardousNormal = await decide(admin, await create(alice, '筛选危险普通', 'normal', true), 'approved');
+    const hazardousUrgent = await decide(teacher, await create(alice, '筛选危险加急', 'urgent', true), 'approved');
+
+    async function filtered(cookie: string, requestType: 'normal' | 'urgent') {
+      const response = await api(ctx.base, cookie, `/api/purchases/tasks/procurement?requestType=${requestType}`);
+      expect(response.status).toBe(200);
+      return ((await response.json()).purchases as Array<{ id: number }>).map(({ id }) => id).sort((a, b) => a - b);
+    }
+
+    expect(await filtered(admin, 'normal')).toEqual([normal.id]);
+    expect(await filtered(admin, 'urgent')).toEqual([urgent.id]);
+    expect(await filtered(hazard, 'normal')).toEqual([hazardousNormal.id]);
+    expect(await filtered(hazard, 'urgent')).toEqual([hazardousUrgent.id]);
+    expect(await filtered(teacher, 'normal')).toEqual([normal.id, hazardousNormal.id].sort((a, b) => a - b));
+    expect(await filtered(teacher, 'urgent')).toEqual([urgent.id, hazardousUrgent.id].sort((a, b) => a - b));
+
+    expect((await api(ctx.base, admin, '/api/purchases/tasks/procurement?requestType=other')).status).toBe(400);
+    expect((await api(ctx.base, admin, '/api/purchases/tasks/procurement?requestType=normal&requestType=urgent')).status).toBe(400);
+  });
 });

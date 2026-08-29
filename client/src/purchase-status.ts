@@ -1,7 +1,7 @@
 import type { PurchaseStatus } from '../../shared/types.js';
 
 const purchaseStatusLabels: Record<PurchaseStatus, string> = {
-  pending_normal: '待普通管理员审批',
+  pending_normal: '待审批与普通采购人审批',
   pending_super: '待超级管理员审批',
   approved: '已通过',
   purchased: '已采购',

@@ -91,6 +91,271 @@ RED 命令：
 npm test -- --run client/src/purchase-view.test.tsx
 ```
 
+## V1.3.0 注册、采购筛选与展示精简（2026-08-30）
+
+工作树：`D:/hermes/worktrees/lab-chemical-manager-v1-3-registration`
+
+基线检查（改动前）：
+
+```text
+$ npm test
+Test Files  16 passed (16)
+     Tests  46 passed (46)
+  Duration  4.09s (transform 1.57s, setup 0ms, collect 8.64s, tests 11.51s, environment 4ms, prepare 2.23s)
+退出码 0
+```
+
+### Slice 1 — AuditView 精简与 PurchaseTable 提交日期
+
+RED 命令：
+
+```text
+npm test -- --run client/src/audit-view.test.tsx client/src/purchase-tasks-ui.test.tsx server/test/routing.test.ts
+```
+
+RED 输出（退出码 1）：
+
+```text
+❯ client/src/purchase-tasks-ui.test.tsx (5 tests | 1 failed) 34ms
+  × purchase task UI > shows a Chinese submission date after applicant in every table mode and safely handles invalid values 20ms
+    → (0 , formatPurchaseCreatedAt) is not a function
+❯ client/src/audit-view.test.tsx (1 test | 1 failed) 9ms
+  × audit log display > keeps the public evidence summary but omits structured details from production DOM 8ms
+    → Element type is invalid: expected a string (for built-in components) or a class/function (for composite components) but got: undefined.
+❯ server/test/routing.test.ts (2 tests | 1 failed) 856ms
+  × catalog and notification routing > notification category switches block only future messages, not audit or business data 313ms
+    → expected { cabinet: 'A', shelf: 3, ownerId: 4 } to match object { Object (name, cabinet, ...) }
+
+Test Files  3 failed (3)
+     Tests  3 failed | 5 passed (8)
+  Duration  1.88s (transform 293ms, setup 0ms, collect 738ms, tests 899ms, environment 1ms, prepare 280ms)
+```
+
+注：服务端 RED 是测试预期过度指定；现有审计详情按设计保存 `{ cabinet, shelf, ownerId }`，药品名已在摘要中。修正该断言后，仍由两个缺失的前端能力维持 RED；未为通过测试删除或停止写入服务端 `details_json`。
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm test -- --run client/src/audit-view.test.tsx client/src/purchase-tasks-ui.test.tsx server/test/routing.test.ts
+✓ client/src/purchase-tasks-ui.test.tsx (5 tests) 42ms
+✓ client/src/audit-view.test.tsx (1 test) 31ms
+✓ server/test/routing.test.ts (2 tests) 916ms
+Test Files  3 passed (3)
+     Tests  8 passed (8)
+  Duration  2.04s (transform 289ms, setup 0ms, collect 858ms, tests 989ms, environment 1ms, prepare 295ms)
+```
+
+### Slice 2 — 集中角色标签与干净登录页
+
+RED 命令及输出（退出码 1）：
+
+```text
+$ npm test -- --run client/src/role-labels.test.tsx client/src/App.test.tsx client/src/purchase-status.test.tsx
+FAIL  client/src/role-labels.test.tsx
+Error: Cannot find module './role-labels.js'
+❯ client/src/App.test.tsx (6 tests | 1 failed) 14ms
+  × front-end critical behavior > renders a clean login form with empty credentials and no demo guidance 6ms
+    → Element type is invalid
+❯ client/src/purchase-status.test.tsx (2 tests | 1 failed) 13ms
+  × purchase status labels > maps all seven API status values to Chinese UI labels 11ms
+    - "label": "待审批与普通采购人审批"
+    + "label": "待普通管理员审批"
+Test Files  3 failed (3)
+     Tests  2 failed | 6 passed (8)
+  Duration  1.05s (transform 190ms, setup 0ms, collect 339ms, tests 27ms, environment 1ms, prepare 311ms)
+```
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm test -- --run client/src/role-labels.test.tsx client/src/App.test.tsx client/src/purchase-status.test.tsx
+✓ client/src/purchase-status.test.tsx (2 tests) 3ms
+✓ client/src/role-labels.test.tsx (2 tests) 7ms
+✓ client/src/App.test.tsx (6 tests) 13ms
+Test Files  3 passed (3)
+     Tests  10 passed (10)
+  Duration  838ms (transform 153ms, setup 0ms, collect 407ms, tests 23ms, environment 1ms, prepare 256ms)
+```
+
+### Slice 3 — 严格普通成员注册、事务会话与前端自动登录
+
+RED 命令及输出（退出码 1）：
+
+```text
+$ npm test -- --run server/test/registration.test.ts client/src/App.test.tsx
+❯ client/src/App.test.tsx (8 tests | 3 failed) 21ms
+  × front-end critical behavior > renders a clean login form with empty credentials and no demo guidance 12ms
+    → expected login markup to contain '注册'
+  × front-end critical behavior > renders strict member registration fields without any role control 2ms
+    → Element type is invalid
+  × front-end critical behavior > posts only registration fields and returns the user used for automatic login 1ms
+    → (0 , registerAccount) is not a function
+❯ server/test/registration.test.ts (4 tests | 4 failed) 851ms
+  × ... atomically creates a hashed member, session, public audit, notification, and compatible cookie
+    → expected 401 to be 201
+  × ... honors super-admin account notification preferences
+    → expected 401 to be 201
+  × ... rejects confirmation mismatch, role injection, short passwords, and invalid usernames without side effects
+    → expected 401 to be 400
+  × ... returns a Chinese 409 conflict for a duplicate username
+    → expected 401 to be 201
+Test Files  2 failed (2)
+     Tests  7 failed | 5 passed (12)
+  Duration  1.71s (transform 212ms, setup 0ms, collect 567ms, tests 872ms, environment 0ms, prepare 147ms)
+```
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm test -- --run server/test/registration.test.ts client/src/App.test.tsx
+✓ client/src/App.test.tsx (8 tests) 16ms
+✓ server/test/registration.test.ts (4 tests) 1080ms
+  ✓ ... atomically creates a hashed member, session, public audit, notification, and compatible cookie 309ms
+Test Files  2 passed (2)
+     Tests  12 passed (12)
+  Duration  1.90s (transform 200ms, setup 0ms, collect 523ms, tests 1.10s, environment 0ms, prepare 153ms)
+```
+
+### Slice 4 — 待采购 requestType 服务端筛选与前端保持筛选
+
+RED 命令及输出（退出码 1）：
+
+```text
+$ npm test -- --run server/test/purchase-tasks.test.ts client/src/purchase-view.test.tsx client/src/purchase-tasks-ui.test.tsx
+❯ client/src/purchase-view.test.tsx (5 tests | 1 failed) 7ms
+  × ... builds exact procurement filter paths without changing the approval path
+    → (0 , procurementTaskPath) is not a function
+❯ client/src/purchase-tasks-ui.test.tsx (6 tests | 1 failed) 36ms
+  × ... renders the purchase-type filter only for procurement tasks
+    → Element type is invalid
+❯ server/test/purchase-tasks.test.ts (2 tests | 1 failed) 1499ms
+  × ... filters procurement tasks by a strictly validated bound request type 716ms
+    → expected [ 1, 2 ] to deeply equal [ 1 ]
+Test Files  3 failed (3)
+     Tests  3 failed | 10 passed (13)
+  Duration  2.49s (transform 206ms, setup 0ms, collect 565ms, tests 1.54s, environment 1ms, prepare 251ms)
+```
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm test -- --run server/test/purchase-tasks.test.ts client/src/purchase-view.test.tsx client/src/purchase-tasks-ui.test.tsx
+✓ client/src/purchase-view.test.tsx (5 tests) 4ms
+✓ client/src/purchase-tasks-ui.test.tsx (6 tests) 51ms
+✓ server/test/purchase-tasks.test.ts (2 tests) 1864ms
+Test Files  3 passed (3)
+     Tests  13 passed (13)
+  Duration  3.42s (transform 449ms, setup 0ms, collect 975ms, tests 1.92s, environment 0ms, prepare 324ms)
+```
+
+实现检查：`PurchaseTaskView` 的 `requestType` 是组件状态；请求路径由该状态计算，加载 effect 依赖 `[path, revision]`。因此 realtime revision 不会清空筛选，并会用当前筛选重新请求。
+
+### Slice 5 — 普通/加急目录危险品隔离与完成权限矩阵
+
+RED 命令及输出（退出码 1）：
+
+```text
+$ npm test -- --run server/test/routing.test.ts server/test/purchased.test.ts
+❯ server/test/routing.test.ts (2 tests | 1 failed) 1092ms
+  × catalog and notification routing > routes approved normal, urgent, and hazardous requests to the correct catalogs 748ms
+    → expected [ 3, 1 ] to not include 3
+✓ server/test/purchased.test.ts (2 tests) 1521ms
+Test Files  1 failed | 1 passed (2)
+     Tests  1 failed | 3 passed (4)
+  Duration  2.58s (transform 200ms, setup 0ms, collect 780ms, tests 2.61s, environment 0ms, prepare 202ms)
+```
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm test -- --run server/test/routing.test.ts server/test/purchased.test.ts
+✓ server/test/routing.test.ts (2 tests) 864ms
+✓ server/test/purchased.test.ts (2 tests) 1127ms
+Test Files  2 passed (2)
+     Tests  4 passed (4)
+  Duration  1.86s (transform 118ms, setup 0ms, collect 565ms, tests 1.99s, environment 0ms, prepare 130ms)
+```
+
+### Slice 6 — acceptance 扩展
+
+RED 命令及输出（退出码 1；扩展验收流程尚缺注册支持 helper）：
+
+```text
+$ npm run acceptance
+> tsc -p server/tsconfig.json
+server/scripts/acceptance.ts(48,28): error TS2552: Cannot find name 'register'. Did you mean 'registered'?
+server/scripts/acceptance.ts(55,23): error TS2552: Cannot find name 'register'. Did you mean 'registered'?
+server/scripts/acceptance.ts(56,23): error TS2552: Cannot find name 'register'. Did you mean 'registered'?
+```
+
+GREEN 命令及输出（退出码 0）：
+
+```text
+$ npm run acceptance
+PASS health: empty in-memory SQLite database returns 200
+PASS roles: five demo logins and server-side 403/200 authorization
+PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login
+PASS inventory/realtime: inbound, cross-owner move, invalid shelf, discard, two Socket.IO clients
+PASS proxy inbound: pending scopes, authorization/version conflicts, atomic approval, reject/withdraw, realtime
+PASS purchase state machine: normal/urgent/hazardous, approve/defer/revise/reject/withdraw, forbidden urgent approval
+PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+PASS purchased lifecycle: permissions/version conflicts, realtime, applicant outcomes, audit, active-queue removal, retained history
+PASS preferences/audit: future category blocked while inventory and immutable public audit remain
+ACCEPTANCE OK (30 audit entries verified)
+```
+
+### V1.3.0 最终验收
+
+```text
+$ npm test
+Test Files  19 passed (19)
+     Tests  60 passed (60)
+  Duration  3.08s (transform 923ms, setup 0ms, collect 6.24s, tests 10.90s, environment 3ms, prepare 1.79s)
+退出码 0
+
+$ npm run lint
+> tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit
+退出码 0
+
+$ npm run build
+> npm run build:server && npm run build:client
+✓ 70 modules transformed.
+dist/index.html                   0.44 kB │ gzip:  0.34 kB
+dist/assets/index-BawmvEiZ.css   10.55 kB │ gzip:  3.10 kB
+dist/assets/index-BzSNXQ80.js   271.56 kB │ gzip: 83.69 kB
+✓ built in 622ms
+退出码 0
+
+$ npm run acceptance
+PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login
+PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+ACCEPTANCE OK (30 audit entries verified)
+退出码 0
+
+$ git diff --check
+退出码 0；无空白错误。输出仅为工作区文件的 LF→CRLF 提示。
+```
+
+生产 bundle 精确检查：
+
+```text
+BUNDLE index-BzSNXQ80.js
+REQUIRED [注册] PRESENT
+REQUIRED [审批与普通采购人] PRESENT
+REQUIRED [提交日期] PRESENT
+REQUIRED [采购类型] PRESENT
+FORBIDDEN [首测演示凭据] ABSENT
+FORBIDDEN [统一密码] ABSENT
+FORBIDDEN [Demo1234!] ABSENT
+FORBIDDEN [结构化详情] ABSENT
+FORBIDDEN [普通管理员] ABSENT
+退出码 0
+```
+
+范围核对：`git diff -- server/src/database.ts package.json package-lock.json` 无输出；没有数据库 schema 改动、依赖改动或 lockfile 改动。所有 HTTP 测试和 acceptance 使用系统分配的临时端口（`listen(0)`），未访问或修改端口 3000。
+
 RED 输出（退出码 1）：
 
 ```text
@@ -184,6 +449,52 @@ GREEN 输出（退出码 0）：
 
  Test Files  1 passed (1)
       Tests  2 passed (2)
+```
+
+## V1.3.0 最终追加记录（2026-08-30）
+
+详细的六个垂直切片 RED→GREEN 原始失败签名和定向 GREEN 结果已记录在本文档上方的“V1.3.0 注册、采购筛选与展示精简”章节。最终命令证据如下：
+
+```text
+$ npm test
+Test Files  19 passed (19)
+     Tests  60 passed (60)
+  Duration  3.08s (transform 923ms, setup 0ms, collect 6.24s, tests 10.90s, environment 3ms, prepare 1.79s)
+退出码 0
+
+$ npm run lint
+> tsc -p server/tsconfig.json --noEmit && tsc -p client/tsconfig.json --noEmit
+退出码 0
+
+$ npm run build
+✓ 70 modules transformed.
+dist/index.html                   0.44 kB │ gzip:  0.34 kB
+dist/assets/index-BawmvEiZ.css   10.55 kB │ gzip:  3.10 kB
+dist/assets/index-BzSNXQ80.js   271.56 kB │ gzip: 83.69 kB
+✓ built in 622ms
+退出码 0
+
+$ npm run acceptance
+PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login
+PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing
+PASS dangerous-goods routing: normal/urgent catalogs and hazardous buyer queue
+ACCEPTANCE OK (30 audit entries verified)
+退出码 0
+
+$ git diff --check
+退出码 0；无空白错误，仅有 LF→CRLF 提示。
+
+BUNDLE index-BzSNXQ80.js
+REQUIRED [注册] PRESENT
+REQUIRED [审批与普通采购人] PRESENT
+REQUIRED [提交日期] PRESENT
+REQUIRED [采购类型] PRESENT
+FORBIDDEN [首测演示凭据] ABSENT
+FORBIDDEN [统一密码] ABSENT
+FORBIDDEN [Demo1234!] ABSENT
+FORBIDDEN [结构化详情] ABSENT
+FORBIDDEN [普通管理员] ABSENT
+退出码 0
 ```
 
 ## 2026-08-30 — V1.2.1 信息架构 / 导航调整
@@ -1191,4 +1502,16 @@ GREEN 输出（退出码 0）：
 
  Test Files  1 passed (1)
       Tests  2 passed (2)
+```
+
+## V1.3.0 evidence — appended final verification
+
+```text
+npm test: exit 0; Test Files 19 passed (19); Tests 60 passed (60)
+npm run lint: exit 0
+npm run build: exit 0; client bundle index-BzSNXQ80.js
+npm run acceptance: exit 0; ACCEPTANCE OK (30 audit entries verified)
+git diff --check: exit 0; no whitespace errors (LF→CRLF notices only)
+bundle required: 注册 / 审批与普通采购人 / 提交日期 / 采购类型 — PRESENT
+bundle forbidden: 首测演示凭据 / 统一密码 / Demo1234! / 结构化详情 / 普通管理员 — ABSENT
 ```

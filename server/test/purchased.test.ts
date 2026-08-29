@@ -54,6 +54,11 @@ describe('approved to purchased transition', () => {
     expect(normalDone.status).toBe(200);
     const purchasedNormal = (await normalDone.json()).purchase;
     expect((await api(ctx.base, teacher, `/api/purchases/${normal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: purchasedNormal.version }) })).status).toBe(409);
+
+    const superNormal = await approve(admin, await create(member, '超级管理员非危险采购'));
+    const superDangerous = await approve(admin, await create(member, '超级管理员危险采购', true));
+    expect((await api(ctx.base, teacher, `/api/purchases/${superNormal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: superNormal.version }) })).status).toBe(200);
+    expect((await api(ctx.base, teacher, `/api/purchases/${superDangerous.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: superDangerous.version }) })).status).toBe(200);
   });
 
   it('routes approval tasks, broadcasts completion, notifies the applicant, audits it, and removes it only from active queues', async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type PurchaseViewMode } from './purchase-view.js';
+import { procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type PurchaseViewMode } from './purchase-view.js';
 
 describe('purchase view modes', () => {
   it('returns to the all-purchases endpoint after opening the normal catalog', () => {
@@ -45,5 +45,12 @@ describe('purchase view modes', () => {
     expect(purchaseTaskDefinition('procurement')).toEqual({
       title: '待采购', path: '/purchases/tasks/procurement', empty: '暂无待采购的药品',
     });
+  });
+
+  it('builds exact procurement filter paths without changing the approval path', () => {
+    expect(procurementTaskPath('approvals', '')).toBe('/purchases/tasks/approvals');
+    expect(procurementTaskPath('procurement', '')).toBe('/purchases/tasks/procurement');
+    expect(procurementTaskPath('procurement', 'normal')).toBe('/purchases/tasks/procurement?requestType=normal');
+    expect(procurementTaskPath('procurement', 'urgent')).toBe('/purchases/tasks/procurement?requestType=urgent');
   });
 });

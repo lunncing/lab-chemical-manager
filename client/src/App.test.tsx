@@ -1,10 +1,47 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { CabinetBoard, canAdministerAccounts, canApprove } from './components.js';
-import { PrimaryNavigation, safeViewForRole, taskSummaryPath } from './App.js';
+import { Login, PrimaryNavigation, RegisterForm, registerAccount, safeViewForRole, taskSummaryPath } from './App.js';
+import type { UserView } from './types.js';
 import { revisionEvents } from './realtime-events.js';
 
 describe('front-end critical behavior', () => {
+  it('renders a clean login form with empty credentials and no demo guidance', () => {
+    const html = renderToStaticMarkup(<Login onLogin={() => undefined} />);
+    expect(html).toContain('登录');
+    expect(html).not.toContain('member-a');
+    expect(html).not.toContain('Demo1234!');
+    expect(html).not.toContain('首测演示凭据');
+    expect(html).not.toContain('统一密码');
+    expect(html).not.toContain('demo-note');
+    expect(html).toContain('注册');
+  });
+
+  it('renders strict member registration fields without any role control', () => {
+    const html = renderToStaticMarkup(<RegisterForm onAuthenticated={() => undefined} />);
+    expect(html).toContain('用户名'); expect(html).toContain('姓名');
+    expect(html).toContain('密码'); expect(html).toContain('确认密码');
+    expect(html).toContain('注册账号默认为普通成员，管理员权限由超级管理员设置');
+    expect(html).not.toContain('name="role"');
+    expect(html).not.toContain('超级管理员</option>');
+  });
+
+  it('posts only registration fields and returns the user used for automatic login', async () => {
+    const user: UserView = { id: 9, username: 'fresh', displayName: '新用户', role: 'member', active: true, demo: false, version: 1 };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ user }), { status: 201, headers: { 'content-type': 'application/json' } }));
+    try {
+      const input = { username: 'fresh', displayName: '新用户', password: 'LongPassword123!', passwordConfirm: 'LongPassword123!' };
+      await expect(registerAccount(input)).resolves.toEqual(user);
+      expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/register', expect.objectContaining({
+        method: 'POST', credentials: 'same-origin', body: JSON.stringify(input),
+      }));
+      expect(String((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1]?.body)).not.toContain('role');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it('renders two cabinets with five ordered, clickable shelves and chemical entries', () => {
     const html = renderToStaticMarkup(<CabinetBoard chemicals={[{
       id: 1, name: '乙醇', specification: 'AR', cabinet: 'A', shelf: 1, status: 'active', version: 1,

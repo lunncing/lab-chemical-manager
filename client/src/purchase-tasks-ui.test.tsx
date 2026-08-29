@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { canMarkPurchased, PurchaseTable, PurchaseTaskSummary, purchaseTableCapabilities } from './purchase-tasks-ui.js';
+import { canMarkPurchased, formatPurchaseCreatedAt, ProcurementTypeFilter, PurchaseTable, PurchaseTaskSummary, purchaseTableCapabilities } from './purchase-tasks-ui.js';
 import type { Purchase } from './types.js';
 
 const purchase: Purchase = {
@@ -57,5 +57,33 @@ describe('purchase task UI', () => {
     const procurement = render('procurement', approvedPurchase);
     expect(procurement).toContain('已采购');
     expect(procurement).not.toMatch(/<button[^>]*>通过<\/button>/); expect(procurement).not.toContain('修改'); expect(procurement).not.toContain('撤销');
+  });
+
+  it('shows a Chinese submission date after applicant in every table mode and safely handles invalid values', () => {
+    const expected = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(purchase.createdAt));
+    expect(formatPurchaseCreatedAt(purchase.createdAt)).toBe(expected);
+    expect(formatPurchaseCreatedAt('not-a-date')).toBe('—');
+    expect(formatPurchaseCreatedAt('')).toBe('—');
+
+    for (const mode of ['all', 'mine', 'approvals', 'procurement', 'catalog_normal', 'catalog_urgent', 'catalog_hazardous'] as const) {
+      const item = mode === 'procurement' ? { ...purchase, status: 'approved' as const } : purchase;
+      const html = renderToStaticMarkup(<PurchaseTable purchases={[item]} mode={mode} currentUserId={4} empty="空" onAction={() => undefined} />);
+      expect(html).toContain('提交日期');
+      expect(html).toContain(expected);
+      expect(html.indexOf('申请人')).toBeLessThan(html.indexOf('提交日期'));
+      expect(html.indexOf('提交日期')).toBeLessThan(html.indexOf('类型'));
+    }
+
+    const invalid = renderToStaticMarkup(<PurchaseTable purchases={[{ ...purchase, createdAt: 'invalid' }]} mode="all" currentUserId={4} empty="空" onAction={() => undefined} />);
+    expect(invalid).toContain('<td>—</td>');
+  });
+
+  it('renders the purchase-type filter only for procurement tasks', () => {
+    const procurement = renderToStaticMarkup(<ProcurementTypeFilter mode="procurement" value="urgent" onChange={() => undefined} />);
+    expect(procurement).toContain('采购类型');
+    expect(procurement).toContain('<option value="">全部</option>');
+    expect(procurement).toContain('<option value="normal">普通</option>');
+    expect(procurement).toContain('<option value="urgent" selected="">加急</option>');
+    expect(renderToStaticMarkup(<ProcurementTypeFilter mode="approvals" value="" onChange={() => undefined} />)).toBe('');
   });
 });

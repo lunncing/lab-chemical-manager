@@ -17,11 +17,15 @@ describe('catalog and notification routing', () => {
       const response = await api(ctx.base, cookie, `/api/purchases/${purchase.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: purchase.version }) });
       expect(response.status).toBe(200);
     }
-    const normal = await submit('normal', false); const urgent = await submit('urgent', false); const dangerous = await submit('normal', true);
-    await approve(normal, admin); await approve(urgent, teacher); await approve(dangerous, admin);
-    expect((await (await api(ctx.base, admin, '/api/purchases/catalog/normal')).json()).purchases.map((p: any) => p.id)).toContain(normal.id);
-    expect((await (await api(ctx.base, admin, '/api/purchases/catalog/urgent')).json()).purchases.map((p: any) => p.id)).toContain(urgent.id);
-    expect((await (await api(ctx.base, hazard, '/api/purchases/catalog/hazardous')).json()).purchases.map((p: any) => p.id)).toEqual([dangerous.id]);
+    const normal = await submit('normal', false); const urgent = await submit('urgent', false);
+    const dangerous = await submit('normal', true); const dangerousUrgent = await submit('urgent', true);
+    await approve(normal, admin); await approve(urgent, teacher); await approve(dangerous, admin); await approve(dangerousUrgent, teacher);
+    const normalIds = (await (await api(ctx.base, admin, '/api/purchases/catalog/normal')).json()).purchases.map((p: any) => p.id);
+    const urgentIds = (await (await api(ctx.base, admin, '/api/purchases/catalog/urgent')).json()).purchases.map((p: any) => p.id);
+    const hazardousIds = (await (await api(ctx.base, hazard, '/api/purchases/catalog/hazardous')).json()).purchases.map((p: any) => p.id);
+    expect(normalIds).toContain(normal.id); expect(normalIds).not.toContain(dangerous.id);
+    expect(urgentIds).toContain(urgent.id); expect(urgentIds).not.toContain(dangerousUrgent.id);
+    expect(hazardousIds).toEqual([dangerousUrgent.id, dangerous.id]);
     expect((await api(ctx.base, member, '/api/purchases/catalog/hazardous')).status).toBe(403);
   });
 
@@ -35,6 +39,8 @@ describe('catalog and notification routing', () => {
     const chemicals = await api(ctx.base, member, '/api/chemicals?search=屏蔽测试');
     expect((await chemicals.json()).chemicals).toHaveLength(1);
     const logs = await api(ctx.base, member, '/api/audit-logs');
-    expect((await logs.json()).logs.some((log: any) => log.summary.includes('屏蔽测试'))).toBe(true);
+    const audit = (await logs.json()).logs.find((log: any) => log.summary.includes('屏蔽测试'));
+    expect(audit).toBeDefined();
+    expect(audit.details).toMatchObject({ cabinet: 'A', shelf: 3, ownerId: 4 });
   });
 });

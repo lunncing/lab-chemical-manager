@@ -2,6 +2,12 @@ import { z } from 'zod';
 import { notificationCategories, roles } from './types.js';
 
 export const loginSchema = z.object({ username: z.string().trim().min(1).max(80), password: z.string().min(1).max(200) }).strict();
+export const registrationSchema = z.object({
+  username: z.string().min(3, '用户名至少需要 3 个字符').max(80, '用户名不能超过 80 个字符').regex(/^[a-zA-Z0-9._-]+$/, '用户名只能包含字母、数字、点、下划线和连字符'),
+  displayName: z.string().trim().min(1, '姓名不能为空').max(100, '姓名不能超过 100 个字符'),
+  password: z.string().min(10, '密码至少需要 10 个字符').max(200, '密码不能超过 200 个字符'),
+  passwordConfirm: z.string().min(1, '请确认密码').max(200, '确认密码不能超过 200 个字符'),
+}).strict().refine((value) => value.password === value.passwordConfirm, { message: '两次输入的密码不一致', path: ['passwordConfirm'] });
 export const userCreateSchema = z.object({
   username: z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9._-]+$/),
   displayName: z.string().trim().min(1).max(100), role: z.enum(roles), password: z.string().min(10).max(200),

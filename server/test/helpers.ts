@@ -1,10 +1,10 @@
 import type { AddressInfo } from 'node:net';
-import { createSystem, type RunningSystem } from '../src/system.js';
+import { createSystem, type RunningSystem, type SystemOptions } from '../src/system.js';
 
 export interface TestContext { system: RunningSystem; base: string; }
 
-export async function startTestSystem(): Promise<TestContext> {
-  const system = createSystem({ databasePath: ':memory:', seedDemo: true });
+export async function startTestSystem(options: Partial<Omit<SystemOptions, 'databasePath'>> = {}): Promise<TestContext> {
+  const system = createSystem({ databasePath: ':memory:', seedDemo: true, ...options });
   await new Promise<void>((resolve) => system.httpServer.listen(0, '127.0.0.1', resolve));
   const address = system.httpServer.address() as AddressInfo;
   return { system, base: `http://127.0.0.1:${address.port}` };

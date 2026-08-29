@@ -3,12 +3,13 @@ import { api, ApiError } from './api.js';
 import { CabinetBoard, Empty, Modal, Status } from './components.js';
 import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, UserView } from './types.js';
 import { roles } from '../../shared/types.js';
-import { isPurchaseListMode, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
+import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type ProcurementRequestType, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
 import { purchaseStatusOptions } from './purchase-status.js';
-import { PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
+import { ProcurementTypeFilter, PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
 import { buildDirectInboundPayload, buildMovePayload, InboundOwnerDisplay, ShelfOptions } from './inventory-forms.js';
 import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
+import { accountRolePrompt, RoleOptions, roleLabel } from './role-labels.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
@@ -87,10 +88,12 @@ export function PurchasesView({ user, revision, onChanged }: { user: UserView; r
 }
 
 export function PurchaseTaskView({ mode, user, revision, onChanged }: { mode: PurchaseTaskViewMode; user: UserView; revision: number; onChanged: () => void }) {
-  const definition = purchaseTaskDefinition(mode); const [purchases, setPurchases] = useState<Purchase[]>([]); const [error, setError] = useState('');
-  useEffect(() => { api<{ purchases: Purchase[] }>(definition.path).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [definition.path, revision]);
+  const definition = purchaseTaskDefinition(mode); const [purchases, setPurchases] = useState<Purchase[]>([]); const [requestType, setRequestType] = useState<ProcurementRequestType>(''); const [error, setError] = useState('');
+  const path = procurementTaskPath(mode, requestType);
+  useEffect(() => { api<{ purchases: Purchase[] }>(path).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [path, revision]);
   async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购任务</p><h1>{definition.title}</h1><p>{mode === 'approvals' ? '处理需要您决定的采购申请。' : '确认已完成采购的药品。'}</p></div></header>
+    <ProcurementTypeFilter mode={mode} value={requestType} onChange={setRequestType} />
     {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={definition.empty} onAction={action} />
   </>;
 }
@@ -103,7 +106,11 @@ function PurchaseCreate({ onClose, onDone }: { onClose: () => void; onDone: () =
 export function AuditView({ revision }: { revision: number }) {
   const [logs, setLogs] = useState<AuditLog[]>([]); const [error, setError] = useState('');
   useEffect(() => { api<{ logs: AuditLog[] }>('/audit-logs').then((value) => setLogs(value.logs)).catch((reason) => setError(messageOf(reason))); }, [revision]);
-  return <><header className="page-header"><div><p className="eyebrow">MONITOR / 审计</p><h1>公开改动日志</h1><p>业务写入与日志同事务保存。日志只读且对所有登录用户公开。</p></div></header>{error && <Status kind="error">{error}</Status>}<div className="timeline">{logs.map((log) => <article key={log.id}><time>{formatTime(log.createdAt)}</time><div><strong>{log.summary}</strong><p>{log.actor.displayName} · {log.action} · {log.objectType} #{log.objectId}</p><details><summary>结构化详情</summary><pre>{JSON.stringify(log.details, null, 2)}</pre></details></div></article>)}</div>{!logs.length && !error && <Empty>尚无改动记录</Empty>}</>;
+  return <><header className="page-header"><div><p className="eyebrow">MONITOR / 审计</p><h1>公开改动日志</h1><p>业务写入与日志同事务保存。日志只读且对所有登录用户公开。</p></div></header>{error && <Status kind="error">{error}</Status>}<AuditEntries logs={logs} />{!logs.length && !error && <Empty>尚无改动记录</Empty>}</>;
+}
+
+export function AuditEntries({ logs }: { logs: AuditLog[] }) {
+  return <div className="timeline">{logs.map((log) => <article key={log.id}><time>{formatTime(log.createdAt)}</time><div><strong>{log.summary}</strong><p>{log.actor.displayName} · {log.action} · {log.objectType} #{log.objectId}</p></div></article>)}</div>;
 }
 
 export function NotificationsView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: (unread?: number) => void }) {
@@ -123,7 +130,7 @@ export function AccountsView({ revision, onChanged }: { revision: number; onChan
   const [users, setUsers] = useState<UserView[]>([]); const [showCreate, setShowCreate] = useState(false); const [error, setError] = useState('');
   useEffect(() => { api<{ users: UserView[] }>('/users').then((value) => setUsers(value.users)).catch((reason) => setError(messageOf(reason))); }, [revision]);
   async function updateAccount(account: UserView, changes: Record<string, unknown>) { try { await api(`/users/${account.id}`, { method: 'PATCH', body: JSON.stringify({ ...changes, version: account.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
-  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 权限</p><h1>账号管理</h1><p>创建真实账号、调整角色或停用演示账号。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新增账号</button></header>{error && <Status kind="error">{error}</Status>}<div className="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>来源</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((account) => <tr key={account.id}><td>@{account.username}</td><td>{account.displayName}</td><td>{account.role}</td><td>{account.demo ? '演示' : '实际'}</td><td>{account.active ? '启用' : '停用'}</td><td><div className="row-actions"><button onClick={async () => { const displayName = prompt('姓名', account.displayName); if (!displayName) return; const role = prompt(`角色：${roles.join(' / ')}`, account.role); if (!role || !roles.includes(role as UserView['role'])) { setError('角色无效'); return; } const password = prompt('新密码（留空表示不修改）') ?? ''; await updateAccount(account, { displayName, role, ...(password ? { password } : {}) }); }}>编辑</button><button onClick={() => updateAccount(account, { active: !account.active })}>{account.active ? '停用' : '启用'}</button></div></td></tr>)}</tbody></table></div>
-    {showCreate && <Modal title="新增实际账号" onClose={() => setShowCreate(false)}><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api('/users', { method: 'POST', body: JSON.stringify({ username: data.get('username'), displayName: data.get('displayName'), role: data.get('role'), password: data.get('password') }) }); setShowCreate(false); onChanged(); } catch (reason) { setError(messageOf(reason)); } }}><label>用户名<input name="username" required pattern="[a-zA-Z0-9._-]+" /></label><label>姓名<input name="displayName" required /></label><label>角色<select name="role">{roles.map((role) => <option key={role}>{role}</option>)}</select></label><label>初始密码<input name="password" type="password" minLength={10} required /></label><div className="form-actions"><button type="button" onClick={() => setShowCreate(false)}>取消</button><button className="primary">创建</button></div></form></Modal>}
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 权限</p><h1>账号管理</h1><p>创建真实账号、调整角色或停用演示账号。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新增账号</button></header>{error && <Status kind="error">{error}</Status>}<div className="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>来源</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((account) => <tr key={account.id}><td>@{account.username}</td><td>{account.displayName}</td><td>{roleLabel(account.role)}</td><td>{account.demo ? '演示' : '实际'}</td><td>{account.active ? '启用' : '停用'}</td><td><div className="row-actions"><button onClick={async () => { const displayName = prompt('姓名', account.displayName); if (!displayName) return; const role = prompt(accountRolePrompt, account.role); if (!role || !roles.includes(role as UserView['role'])) { setError('角色无效'); return; } const password = prompt('新密码（留空表示不修改）') ?? ''; await updateAccount(account, { displayName, role, ...(password ? { password } : {}) }); }}>编辑</button><button onClick={() => updateAccount(account, { active: !account.active })}>{account.active ? '停用' : '启用'}</button></div></td></tr>)}</tbody></table></div>
+    {showCreate && <Modal title="新增实际账号" onClose={() => setShowCreate(false)}><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api('/users', { method: 'POST', body: JSON.stringify({ username: data.get('username'), displayName: data.get('displayName'), role: data.get('role'), password: data.get('password') }) }); setShowCreate(false); onChanged(); } catch (reason) { setError(messageOf(reason)); } }}><label>用户名<input name="username" required pattern="[a-zA-Z0-9._-]+" /></label><label>姓名<input name="displayName" required /></label><label>角色<select name="role"><RoleOptions /></select></label><label>初始密码<input name="password" type="password" minLength={10} required /></label><div className="form-actions"><button type="button" onClick={() => setShowCreate(false)}>取消</button><button className="primary">创建</button></div></form></Modal>}
   </>;
 }

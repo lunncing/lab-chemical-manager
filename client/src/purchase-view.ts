@@ -3,6 +3,7 @@ import type { Role } from './types.js';
 export type PurchaseViewMode = 'all' | 'mine' | 'approvals' | 'procurement' | 'catalog_normal' | 'catalog_urgent' | 'catalog_hazardous';
 export type PurchaseRequestViewMode = Exclude<PurchaseViewMode, 'approvals' | 'procurement'>;
 export type PurchaseTaskViewMode = Extract<PurchaseViewMode, 'approvals' | 'procurement'>;
+export type ProcurementRequestType = '' | 'normal' | 'urgent';
 
 export interface PurchaseFilters {
   status?: string;
@@ -46,3 +47,8 @@ const taskDefinitions: Record<PurchaseTaskViewMode, { title: string; path: strin
 };
 
 export function purchaseTaskDefinition(mode: PurchaseTaskViewMode) { return taskDefinitions[mode]; }
+
+export function procurementTaskPath(mode: PurchaseTaskViewMode, requestType: ProcurementRequestType): string {
+  const path = taskDefinitions[mode].path;
+  return mode === 'procurement' && requestType ? `${path}?requestType=${requestType}` : path;
+}

@@ -5,6 +5,7 @@ import { AccountsView, AuditView, InventoryView, NotificationsView, PurchasesVie
 import type { Role, UserView } from './types.js';
 import { revisionEvents } from './realtime-events.js';
 import type { PurchaseTaskSummaryValue } from './purchase-tasks-ui.js';
+import { roleLabel } from './role-labels.js';
 
 export type View = 'inventory' | 'purchases' | 'approvals' | 'procurement' | 'audit' | 'notifications' | 'accounts';
 export const taskSummaryPath = '/purchases/tasks/summary';
@@ -61,7 +62,7 @@ export function App() {
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">LSF</span><div><strong>李少锋课题组</strong><small>药品管理</small></div></div>
       <PrimaryNavigation role={user.role} view={activeView} summary={taskSummary} unread={unread} onView={setView} />
-      <div className="identity"><span>{user.displayName}</span><small>{roleName(user.role)} · @{user.username}</small><button onClick={async () => { await api('/auth/logout', { method: 'POST' }); setUser(null); }}>退出登录</button></div>
+      <div className="identity"><span>{user.displayName}</span><small>{roleLabel(user.role)} · @{user.username}</small><button onClick={async () => { await api('/auth/logout', { method: 'POST' }); setUser(null); }}>退出登录</button></div>
     </aside>
     <main className="workspace">
       {activeView === 'inventory' && <InventoryView user={user} revision={revision} onChanged={refresh} />}
@@ -75,17 +76,41 @@ export function App() {
   </div>;
 }
 
-function Login({ onLogin }: { onLogin: (user: UserView) => void }) {
-  const [username, setUsername] = useState('member-a'); const [password, setPassword] = useState('Demo1234!'); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+export function Login({ onLogin }: { onLogin: (user: UserView) => void }) {
+  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   return <main className="login-page"><section className="login-panel">
     <div className="brand login-brand"><span className="brand-mark">LSF</span><div><h1>李少锋课题组 · 药品管理</h1><p>实验室药品操作台</p></div></div>
-    <form onSubmit={async (event) => { event.preventDefault(); setBusy(true); setError(''); try { onLogin((await api<{ user: UserView }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })).user); } catch (reason) { setError(reason instanceof ApiError ? reason.message : '登录失败'); } finally { setBusy(false); } }}>
+    <div className="auth-modes" aria-label="登录或注册"><button type="button" aria-pressed={mode === 'login'} onClick={() => setMode('login')}>登录</button><button type="button" aria-pressed={mode === 'register'} onClick={() => setMode('register')}>注册</button></div>
+    {mode === 'login' ? <form onSubmit={async (event) => { event.preventDefault(); setBusy(true); setError(''); try { onLogin((await api<{ user: UserView }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })).user); } catch (reason) { setError(reason instanceof ApiError ? reason.message : '登录失败'); } finally { setBusy(false); } }}>
       <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
       <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
       {error && <div className="status error" role="alert">{error}</div>}<button className="primary" disabled={busy}>{busy ? '登录中…' : '登录'}</button>
-    </form>
-    <div className="demo-note"><strong>首测演示凭据（仅限首次测试）</strong><p>teacher / admin / hazard / member-a / member-b</p><p>统一密码：<code>Demo1234!</code>。部署后请立即创建真实账号并停用演示账号。</p></div>
+    </form> : <RegisterForm onAuthenticated={onLogin} />}
   </section></main>;
 }
 
-function roleName(role: UserView['role']) { return { member: '普通成员', normal_admin: '普通管理员', super_admin: '超级管理员', hazardous_buyer: '危险品采购人' }[role]; }
+export interface RegistrationInput { username: string; displayName: string; password: string; passwordConfirm: string; }
+
+export async function registerAccount(input: RegistrationInput): Promise<UserView> {
+  return (await api<{ user: UserView }>('/auth/register', { method: 'POST', body: JSON.stringify(input) })).user;
+}
+
+export function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: UserView) => void }) {
+  const [username, setUsername] = useState(''); const [displayName, setDisplayName] = useState('');
+  const [password, setPassword] = useState(''); const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  return <form onSubmit={async (event) => {
+    event.preventDefault(); setBusy(true); setError('');
+    try { onAuthenticated(await registerAccount({ username, displayName, password, passwordConfirm })); }
+    catch (reason) { setError(reason instanceof ApiError ? reason.message : '注册失败，请重试'); }
+    finally { setBusy(false); }
+  }}>
+    <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={80} pattern="[a-zA-Z0-9._-]+" required /></label>
+    <label>姓名<input autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={100} required /></label>
+    <label>密码<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={200} required /></label>
+    <label>确认密码<input type="password" autoComplete="new-password" value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} minLength={10} maxLength={200} required /></label>
+    <p className="registration-note">注册账号默认为普通成员，管理员权限由超级管理员设置</p>
+    {error && <div className="status error" role="alert">{error}</div>}<button className="primary" disabled={busy}>{busy ? '注册中…' : '注册并登录'}</button>
+  </form>;
+}

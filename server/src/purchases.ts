@@ -46,8 +46,8 @@ function procurementTaskWhere(role: AuthedRequest['user']['role']): string | nul
   return null;
 }
 
-function taskPurchases(db: Db, where: string): ReturnType<typeof mapPurchase>[] {
-  const rows = db.prepare(`${selectPurchase} WHERE ${where} ORDER BY p.id DESC`).all() as Array<Record<string, unknown>>;
+function taskPurchases(db: Db, where: string, params: Array<string | number> = []): ReturnType<typeof mapPurchase>[] {
+  const rows = db.prepare(`${selectPurchase} WHERE ${where} ORDER BY p.id DESC`).all(...params) as Array<Record<string, unknown>>;
   return rows.map(mapPurchase);
 }
 
@@ -72,16 +72,22 @@ export function purchasesRouter(db: Db, io: SocketServer): Router {
     res.json({ purchases: taskPurchases(db, where) });
   }));
   router.get('/tasks/procurement', asyncRoute((request, res) => {
-    const req = request as AuthedRequest; const where = procurementTaskWhere(req.user.role);
+    const req = request as AuthedRequest; let where = procurementTaskWhere(req.user.role);
     if (!where) throw new HttpError(403, '当前角色没有采购任务', 'FORBIDDEN');
-    res.json({ purchases: taskPurchases(db, where) });
+    const requestType = req.query.requestType;
+    if (requestType !== undefined && (typeof requestType !== 'string' || !['normal', 'urgent'].includes(requestType))) {
+      throw new HttpError(400, '采购类型筛选无效', 'VALIDATION_ERROR');
+    }
+    const params: Array<string | number> = [];
+    if (requestType) { where += ' AND p.request_type=?'; params.push(requestType); }
+    res.json({ purchases: taskPurchases(db, where, params) });
   }));
   router.get('/catalog/normal', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
-    const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='normal' AND p.decided_at>=? ORDER BY p.id DESC`).all(mondayIso()) as Array<Record<string, unknown>>;
+    const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='normal' AND p.hazardous=0 AND p.decided_at>=? ORDER BY p.id DESC`).all(mondayIso()) as Array<Record<string, unknown>>;
     res.json({ purchases: rows.map(mapPurchase) });
   });
   router.get('/catalog/urgent', roleRequired('normal_admin', 'super_admin'), (_req, res) => {
-    const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='urgent' ORDER BY p.id DESC`).all() as Array<Record<string, unknown>>;
+    const rows = db.prepare(`${selectPurchase} WHERE p.status='approved' AND p.request_type='urgent' AND p.hazardous=0 ORDER BY p.id DESC`).all() as Array<Record<string, unknown>>;
     res.json({ purchases: rows.map(mapPurchase) });
   });
   router.get('/catalog/hazardous', roleRequired('hazardous_buyer', 'super_admin'), (_req, res) => {
