@@ -1849,3 +1849,27 @@ git diff --check: 退出码 0；无空白错误（仅 LF→CRLF 提示）
 package.json / package-lock.json diff: 无输出
 未启动或修改端口 3000；未 commit
 ```
+
+## V1.6 — 邀请码注册（2026-08-30）
+
+按纵向切片逐项先 RED 后 GREEN：
+
+1. 加密/持久化 RED：`registration-invites-storage.test.ts` 因 `registration-invites.js` 不存在而失败；GREEN：2/2（192-bit 格式、SHA-256-only、hint、7 天、V1.5 additive/idempotent/FK/旧表 JSON-SHA）。
+2. 生成/列表/撤销 RED：4/4 因 API 404 失败；GREEN：4/4（完整角色矩阵、normal own-only、super all、strict body、审计无明文、权限/状态/version）。
+3. 注册消费 RED：7 项中 6 项失败（带邀请码仍 400、并发双方均 400）；GREEN：7/7（missing/invalid/expired/revoked/used、注入、重复用户名、强制中途失败回滚、并发单消费）。
+4. 前端 RED：管理模块不存在，注册字段/导航/安全回退失败；GREEN：12/12（必填邀请码、角色 DOM、一次显示/复制、中文状态、列表/撤销 payload、realtime event）。
+5. 消费 realtime RED：等待 `registration-invite:changed` 超时；GREEN：注册 COMMIT 后广播安全 used view，不含 code/hash。
+
+最终验证：
+
+```text
+npm test: Test Files 30 passed (30); Tests 98 passed (98)
+npm run lint: 退出码 0
+npm run build: 退出码 0；73 modules transformed；index-CweS2WaA.js / index-DQXGKifk.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (39 audit entries verified)
+V1.5 additive fixture: 所有旧表 row-count/JSON-SHA 不变；新表 0 行；二次打开幂等；FK check 空
+bundle: 含“邀请码管理 / 邀请码 / 一次性 / 7 天”；无 LSF-<32 chars> 候选码
+git diff --check: 退出码 0（仅 LF→CRLF 提示）
+package.json / package-lock.json: diff 为空
+未启动或修改端口 3000；未访问远程网络；未 commit
+```

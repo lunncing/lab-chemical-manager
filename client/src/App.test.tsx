@@ -20,7 +20,8 @@ describe('front-end critical behavior', () => {
   it('renders strict member registration fields without any role control', () => {
     const html = renderToStaticMarkup(<RegisterForm onAuthenticated={() => undefined} />);
     expect(html).toContain('用户名'); expect(html).toContain('姓名');
-    expect(html).toContain('密码'); expect(html).toContain('确认密码');
+    expect(html).toContain('密码'); expect(html).toContain('确认密码'); expect(html).toContain('邀请码');
+    expect(html).toContain('邀请码由审批与普通采购人或超级管理员生成，一次性且 7 天有效');
     expect(html).toContain('注册账号默认为普通成员，管理员权限由超级管理员设置');
     expect(html).not.toContain('name="role"');
     expect(html).not.toContain('超级管理员</option>');
@@ -31,7 +32,7 @@ describe('front-end critical behavior', () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ user }), { status: 201, headers: { 'content-type': 'application/json' } }));
     try {
-      const input = { username: 'fresh', displayName: '新用户', password: 'LongPassword123!', passwordConfirm: 'LongPassword123!' };
+      const input = { username: 'fresh', displayName: '新用户', password: 'LongPassword123!', passwordConfirm: 'LongPassword123!', inviteCode: `LSF-${'A'.repeat(32)}` };
       await expect(registerAccount(input)).resolves.toEqual(user);
       expect(globalThis.fetch).toHaveBeenCalledWith('/api/auth/register', expect.objectContaining({
         method: 'POST', credentials: 'same-origin', body: JSON.stringify(input),
@@ -76,6 +77,8 @@ describe('role-filtered primary navigation', () => {
     const html = navigation('member');
     expect(html).not.toContain('待审批');
     expect(html).not.toContain('待采购');
+    expect(html).not.toContain('邀请码管理');
+    expect(navigation('hazardous_buyer')).not.toContain('邀请码管理');
   });
 
   it('shows only procurement to hazardous buyers and both counted tasks to administrators', () => {
@@ -85,6 +88,7 @@ describe('role-filtered primary navigation', () => {
 
     for (const role of ['normal_admin', 'super_admin'] as const) {
       const html = navigation(role);
+      expect(html).toContain('邀请码管理');
       expect(html).toContain('待审批（3）');
       expect(html).toContain('待采购（2）');
       expect(html).not.toContain('我的审批');
@@ -102,5 +106,9 @@ describe('role-filtered primary navigation', () => {
     expect(safeViewForRole('procurement', 'member')).toBe('inventory');
     expect(safeViewForRole('procurement', 'hazardous_buyer')).toBe('procurement');
     expect(safeViewForRole('accounts', 'normal_admin')).toBe('inventory');
+    expect(safeViewForRole('invites', 'member')).toBe('inventory');
+    expect(safeViewForRole('invites', 'hazardous_buyer')).toBe('inventory');
+    expect(safeViewForRole('invites', 'normal_admin')).toBe('invites');
+    expect(revisionEvents).toContain('registration-invite:changed');
   });
 });

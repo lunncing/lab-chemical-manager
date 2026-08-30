@@ -25,6 +25,9 @@ async function register(input: Record<string, unknown>) {
   const body = await response.clone().json() as { user?: any };
   return { response, cookie: response.headers.get('set-cookie')?.split(';')[0] ?? '', user: body.user };
 }
+async function createInvite(cookie: string) {
+  return (await json(await request('/registration-invites', cookie, { method: 'POST' }), 201)).invite;
+}
 async function json(response: Response, status = 200) { assert.equal(response.status, status, await response.clone().text()); return response.status === 204 ? undefined : response.json(); }
 async function connect(cookie: string) {
   const socket = connectSocket(base, { transports: ['websocket'], extraHeaders: { cookie }, forceNew: true }); sockets.push(socket);
@@ -52,16 +55,35 @@ try {
   assert.equal((await request('/users', alice.cookie)).status, 403); assert.equal((await request('/users', teacher.cookie)).status, 200);
   console.log('PASS roles: five demo logins and server-side 403/200 authorization');
 
-  const registered = await register({ username: 'acceptance-member', displayName: '验收注册成员', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!' });
+  assert.equal((await request('/registration-invites', alice.cookie, { method: 'POST' })).status, 403);
+  assert.equal((await request('/registration-invites', hazard.cookie, { method: 'POST' })).status, 403);
+  assert.equal((await register({ username: 'no-invite', displayName: '无邀请注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!' })).response.status, 400);
+  const registrationInvite = await createInvite(admin.cookie);
+  assert.match(registrationInvite.code, /^LSF-[A-Za-z0-9_-]{32}$/);
+  assert.equal(JSON.stringify(system.db.prepare('SELECT * FROM registration_invites WHERE id=?').get(registrationInvite.id)).includes(registrationInvite.code), false);
+  const registered = await register({ username: 'acceptance-member', displayName: '验收注册成员', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: registrationInvite.code });
   assert.equal(registered.response.status, 201); assert.equal(registered.user.role, 'member'); assert.equal(registered.user.active, true); assert.equal(registered.user.demo, false);
   assert.equal((await json(await request('/auth/me', registered.cookie))).user.id, registered.user.id);
   const registeredRow = system.db.prepare('SELECT * FROM users WHERE id=?').get(registered.user.id) as Record<string, unknown>;
   assert(verifyPassword('Acceptance123!', String(registeredRow.password_hash)));
   assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='account_register' AND object_id=?`).get(String(registered.user.id)) as { count: number }).count, 1);
   assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id WHERE u.username='teacher' AND n.category='account' AND n.object_id=?`).get(String(registered.user.id)) as { count: number }).count, 1);
-  assert.equal((await register({ username: 'role-injection', displayName: '越权注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', role: 'super_admin' })).response.status, 400);
-  assert.equal((await register({ username: 'acceptance-member', displayName: '重复注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!' })).response.status, 409);
-  console.log('PASS registration: strict member-only hashed account, transactional session/audit/notification, cookie auto-login');
+  const reuse = await register({ username: 'invite-reuse', displayName: '重复使用邀请', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: registrationInvite.code });
+  assert.equal(reuse.response.status, 400); assert.equal((await reuse.response.json()).error.message, '邀请码无效或已失效');
+  const injectedInvite = await createInvite(teacher.cookie);
+  assert.equal((await register({ username: 'role-injection', displayName: '越权注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: injectedInvite.code, role: 'super_admin' })).response.status, 400);
+  const duplicateInvite = await createInvite(admin.cookie);
+  assert.equal((await register({ username: 'acceptance-member', displayName: '重复注册', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: duplicateInvite.code })).response.status, 409);
+  const revokedInvite = await createInvite(admin.cookie);
+  assert.equal((await request(`/registration-invites/${revokedInvite.id}/revoke`, admin.cookie, { method: 'POST', body: JSON.stringify({ version: revokedInvite.version }) })).status, 200);
+  assert.equal((await register({ username: 'revoked-invite', displayName: '撤销邀请', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: revokedInvite.code })).response.status, 400);
+  const expiredInvite = await createInvite(admin.cookie);
+  system.db.prepare('UPDATE registration_invites SET expires_at=? WHERE id=?').run('2000-01-01T00:00:00.000Z', expiredInvite.id);
+  assert.equal((await register({ username: 'expired-invite', displayName: '过期邀请', password: 'Acceptance123!', passwordConfirm: 'Acceptance123!', inviteCode: expiredInvite.code })).response.status, 400);
+  const candidateCodes = [registrationInvite.code, injectedInvite.code, duplicateInvite.code, revokedInvite.code, expiredInvite.code];
+  const persistentData = JSON.stringify({ invites: system.db.prepare('SELECT * FROM registration_invites').all(), audits: system.db.prepare(`SELECT * FROM audit_logs WHERE object_type='registration_invite'`).all(), notifications: system.db.prepare(`SELECT * FROM notifications WHERE object_type='registration_invite'`).all() });
+  assert(candidateCodes.every((code) => !persistentData.includes(code)));
+  console.log('PASS invite registration: admin generation, member/hazard 403, hash-only storage, member-only registration, reuse/revoke/expiry failure');
 
   const aliceSocket = await connect(alice.cookie); const bobSocket = await connect(bob.cookie);
   const firstRealtime = event(aliceSocket, 'chemical:changed'); const secondRealtime = event(bobSocket, 'chemical:changed');

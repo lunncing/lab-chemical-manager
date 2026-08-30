@@ -13,6 +13,7 @@ import { notificationsRouter } from './notifications.js';
 import { purchasesRouter } from './purchases.js';
 import { inboundRequestsRouter } from './inbound-requests.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
+import { digestInviteCode, registrationInvitesRouter, registrationInviteView } from './registration-invites.js';
 
 export interface RunningSystem { app: express.Express; httpServer: HttpServer; io: SocketServer; db: Db; close(): Promise<void>; }
 export interface SystemOptions { databasePath: string; seedDemo?: boolean; cookieSecure?: boolean; sessionDays?: number; }
@@ -79,19 +80,26 @@ export function createSystem(options: SystemOptions): RunningSystem {
     let committed;
     try {
       committed = transaction(db, () => {
+        const invite = db.prepare(`SELECT id,version FROM registration_invites
+          WHERE code_hash=? AND used_by IS NULL AND revoked_at IS NULL AND expires_at>?`).get(digestInviteCode(input.inviteCode), now) as { id: number; version: number } | undefined;
+        if (!invite) throw new HttpError(400, '邀请码无效或已失效', 'INVALID_INVITE');
         const result = db.prepare(`INSERT INTO users (username,display_name,role,password_hash,active,demo,created_at,updated_at)
           VALUES (?,?,'member',?,1,0,?,?)`).run(input.username, input.displayName, hashPassword(input.password), now, now);
         const user = userView(db.prepare('SELECT * FROM users WHERE id=?').get(Number(result.lastInsertRowid)) as Record<string, unknown>);
+        const consumed = db.prepare(`UPDATE registration_invites SET used_by=?,used_at=?,version=version+1
+          WHERE id=? AND version=? AND used_by IS NULL AND revoked_at IS NULL AND expires_at>?`).run(user.id, now, invite.id, invite.version, now);
+        if (consumed.changes !== 1) throw new HttpError(400, '邀请码无效或已失效', 'INVALID_INVITE');
         db.prepare('INSERT INTO sessions (token_hash,user_id,expires_at) VALUES (?,?,?)').run(digestToken(token), user.id, expires.toISOString());
         const audit = insertAudit(db, { actorId: user.id, action: 'account_register', objectType: 'user', objectId: user.id, summary: `新成员注册：${user.username}`, details: { username: user.username, displayName: user.displayName, role: 'member' } }, now);
         const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'account', `u.role='super_admin'`), category: 'account', title: '新成员注册', body: `${user.displayName} (@${user.username}) 已注册`, objectType: 'user', objectId: user.id }, now);
-        return { user, audit, notifications };
+        return { user, invite: registrationInviteView(db, invite.id, now)!, audit, notifications };
       });
     } catch (error) {
       if (isUsernameConflict(error)) throw new HttpError(409, '用户名已存在', 'CONFLICT');
       throw error;
     }
     emitCommitted(io, 'user:changed', committed.user, committed.audit, committed.notifications);
+    io.emit('registration-invite:changed', committed.invite);
     res.setHeader('Set-Cookie', sessionCookie(token, expires, Boolean(options.cookieSecure)));
     res.status(201).json({ user: committed.user });
   }));
@@ -109,6 +117,7 @@ export function createSystem(options: SystemOptions): RunningSystem {
   app.use('/api/audit-logs', auditRouter(db));
   app.use('/api/notifications', notificationsRouter(db, io));
   app.use('/api/purchases', purchasesRouter(db, io));
+  app.use('/api/registration-invites', registrationInvitesRouter(db, io));
   app.get('/api/members', (_req, res) => {
     const rows = db.prepare('SELECT * FROM users WHERE active=1 ORDER BY display_name, id').all() as Array<Record<string, unknown>>;
     res.json({ users: rows.map(userView) });

@@ -2,6 +2,14 @@ import type { Cabinet, InboundRequestStatus, PurchaseStatus, PurchaseType, Role,
 export type { UserView, Role };
 
 export interface Person { id: number; username: string; displayName: string; }
+export type RegistrationInviteStatus = 'active' | 'used' | 'revoked' | 'expired';
+export interface RegistrationInvite {
+  id: number; codeHint: string; creator: Person; createdAt: string; expiresAt: string; status: RegistrationInviteStatus;
+  usedBy: Person | null; usedAt: string | null; revokedAt: string | null; version: number;
+}
+export interface CreatedRegistrationInvite {
+  id: number; code: string; codeHint: string; createdAt: string; expiresAt: string; version: number;
+}
 export interface Chemical {
   id: number; name: string; specification: string; owner: Person; inboundOperator: Person; inboundAt: string;
   cabinet: Cabinet; shelf: number; status: 'active' | 'discarded'; discardReason: string | null;

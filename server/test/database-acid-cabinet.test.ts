@@ -62,7 +62,7 @@ function createV14(path: string, brokenForeignKey = false): DatabaseSync {
 }
 
 function snapshot(db: DatabaseSync) {
-  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
+  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'registration_invites' ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
   return Object.fromEntries(tables.map((table) => {
     const rows = db.prepare(`SELECT * FROM "${table}" ORDER BY rowid`).all();
     return [table, { count: rows.length, sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex') }];

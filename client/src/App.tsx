@@ -6,8 +6,9 @@ import type { Role, UserView } from './types.js';
 import { revisionEvents } from './realtime-events.js';
 import type { PurchaseTaskSummaryValue } from './purchase-tasks-ui.js';
 import { roleLabel } from './role-labels.js';
+import { InviteManagementView } from './invite-management.js';
 
-export type View = 'inventory' | 'purchases' | 'approvals' | 'procurement' | 'audit' | 'notifications' | 'accounts';
+export type View = 'inventory' | 'purchases' | 'approvals' | 'procurement' | 'audit' | 'notifications' | 'accounts' | 'invites';
 export const taskSummaryPath = '/purchases/tasks/summary';
 
 const approvalRoles: Role[] = ['normal_admin', 'super_admin'];
@@ -17,6 +18,7 @@ export function safeViewForRole(view: View, role: Role): View {
   if (view === 'approvals' && !approvalRoles.includes(role)) return 'inventory';
   if (view === 'procurement' && !procurementRoles.includes(role)) return 'inventory';
   if (view === 'accounts' && role !== 'super_admin') return 'inventory';
+  if (view === 'invites' && !approvalRoles.includes(role)) return 'inventory';
   return view;
 }
 
@@ -26,6 +28,7 @@ export function PrimaryNavigation({ role, view, summary, unread, onView }: {
   const nav: Array<[View, string]> = [['inventory', '首页药品柜'], ['purchases', '采购申请']];
   if (approvalRoles.includes(role)) nav.push(['approvals', `待审批（${summary.approvalCount}）`]);
   if (procurementRoles.includes(role)) nav.push(['procurement', `待采购（${summary.procurementCount}）`]);
+  if (approvalRoles.includes(role)) nav.push(['invites', '邀请码管理']);
   nav.push(['audit', '改动日志'], ['notifications', `消息${unread ? ` (${unread})` : ''}`]);
   if (role === 'super_admin') nav.push(['accounts', '账号管理']);
   return <nav aria-label="主导航">{nav.map(([key, label]) => <button key={key} aria-current={view === key ? 'page' : undefined} onClick={() => onView(key)}>{label}</button>)}</nav>;
@@ -72,6 +75,7 @@ export function App() {
       {activeView === 'audit' && <AuditView revision={revision} />}
       {activeView === 'notifications' && <NotificationsView user={user} revision={revision} onChanged={(count) => { if (count !== undefined) setUnread(count); else refresh(); }} />}
       {activeView === 'accounts' && user.role === 'super_admin' && <AccountsView revision={revision} onChanged={refresh} />}
+      {activeView === 'invites' && approvalRoles.includes(user.role) && <InviteManagementView revision={revision} onChanged={refresh} />}
     </main>
   </div>;
 }
@@ -90,7 +94,7 @@ export function Login({ onLogin }: { onLogin: (user: UserView) => void }) {
   </section></main>;
 }
 
-export interface RegistrationInput { username: string; displayName: string; password: string; passwordConfirm: string; }
+export interface RegistrationInput { username: string; displayName: string; password: string; passwordConfirm: string; inviteCode: string; }
 
 export async function registerAccount(input: RegistrationInput): Promise<UserView> {
   return (await api<{ user: UserView }>('/auth/register', { method: 'POST', body: JSON.stringify(input) })).user;
@@ -99,18 +103,21 @@ export async function registerAccount(input: RegistrationInput): Promise<UserVie
 export function RegisterForm({ onAuthenticated }: { onAuthenticated: (user: UserView) => void }) {
   const [username, setUsername] = useState(''); const [displayName, setDisplayName] = useState('');
   const [password, setPassword] = useState(''); const [passwordConfirm, setPasswordConfirm] = useState('');
+  const [inviteCode, setInviteCode] = useState('');
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   return <form onSubmit={async (event) => {
     event.preventDefault(); setBusy(true); setError('');
-    try { onAuthenticated(await registerAccount({ username, displayName, password, passwordConfirm })); }
+    try { onAuthenticated(await registerAccount({ username, displayName, password, passwordConfirm, inviteCode })); }
     catch (reason) { setError(reason instanceof ApiError ? reason.message : '注册失败，请重试'); }
     finally { setBusy(false); }
   }}>
     <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={80} pattern="[a-zA-Z0-9._-]+" required /></label>
     <label>姓名<input autoComplete="name" value={displayName} onChange={(event) => setDisplayName(event.target.value)} maxLength={100} required /></label>
+    <label>邀请码<input autoComplete="off" value={inviteCode} onChange={(event) => setInviteCode(event.target.value)} placeholder="LSF-…" required /></label>
     <label>密码<input type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={10} maxLength={200} required /></label>
     <label>确认密码<input type="password" autoComplete="new-password" value={passwordConfirm} onChange={(event) => setPasswordConfirm(event.target.value)} minLength={10} maxLength={200} required /></label>
     <p className="registration-note">注册账号默认为普通成员，管理员权限由超级管理员设置</p>
+    <p className="registration-note">邀请码由审批与普通采购人或超级管理员生成，一次性且 7 天有效</p>
     {error && <div className="status error" role="alert">{error}</div>}<button className="primary" disabled={busy}>{busy ? '注册中…' : '注册并登录'}</button>
   </form>;
 }

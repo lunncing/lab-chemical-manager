@@ -16,6 +16,7 @@ export const registrationSchema = z.object({
   displayName: z.string().trim().min(1, '姓名不能为空').max(100, '姓名不能超过 100 个字符'),
   password: z.string().min(10, '密码至少需要 10 个字符').max(200, '密码不能超过 200 个字符'),
   passwordConfirm: z.string().min(1, '请确认密码').max(200, '确认密码不能超过 200 个字符'),
+  inviteCode: z.string({ error: '邀请码无效或已失效' }).trim().regex(/^LSF-[A-Za-z0-9_-]{32}$/, '邀请码无效或已失效'),
 }).strict().refine((value) => value.password === value.passwordConfirm, { message: '两次输入的密码不一致', path: ['passwordConfirm'] });
 export const userCreateSchema = z.object({
   username: z.string().trim().min(3).max(80).regex(/^[a-zA-Z0-9._-]+$/),
@@ -59,4 +60,5 @@ export const purchaseUpdateSchema = purchaseCreateSchema.partial().extend({ vers
 export const decisionSchema = z.object({ decision: z.enum(['approved', 'deferred', 'rejected']), comment: z.string().trim().max(1000).optional(), version: z.number().int().positive() }).strict()
   .superRefine((value, ctx) => { if ((value.decision === 'deferred' || value.decision === 'rejected') && !value.comment) ctx.addIssue({ code: 'custom', message: '推迟或驳回必须填写说明', path: ['comment'] }); });
 export const versionSchema = z.object({ version: z.number().int().positive() }).strict();
+export const registrationInviteCreateSchema = z.object({}).strict();
 export const preferencesSchema = z.object({ category: z.enum(notificationCategories), enabled: z.boolean() }).strict();

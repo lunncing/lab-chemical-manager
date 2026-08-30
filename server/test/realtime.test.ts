@@ -57,4 +57,35 @@ describe('authenticated Socket.IO realtime', () => {
     const approved = await api(ctx.base, bobCookie, `/api/inbound-requests/${created.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: created.version }) });
     expect(approved.status).toBe(200); expect((await approvedEvent).status).toBe('approved'); expect((await chemicalEvent).name).toBe('实时代入库');
   });
+
+  it('broadcasts safe invite creation and revocation changes without plaintext', async () => {
+    const adminCookie = await login(ctx.base, 'admin'); const teacherCookie = await login(ctx.base, 'teacher');
+    const admin = await connect(adminCookie); const teacher = await connect(teacherCookie);
+    const adminCreated = nextEvent<any>(admin, 'registration-invite:changed'); const teacherCreated = nextEvent<any>(teacher, 'registration-invite:changed');
+    const response = await api(ctx.base, adminCookie, '/api/registration-invites', { method: 'POST' });
+    expect(response.status).toBe(201); const created = (await response.json()).invite;
+    const adminEvent = await adminCreated; const teacherEvent = await teacherCreated;
+    expect(adminEvent).toMatchObject({ id: created.id, codeHint: created.codeHint, status: 'active', version: 1 });
+    expect(teacherEvent.id).toBe(created.id);
+    expect(JSON.stringify([adminEvent, teacherEvent])).not.toContain(created.code);
+    expect(adminEvent).not.toHaveProperty('code'); expect(adminEvent).not.toHaveProperty('codeHash');
+
+    const revokedEvent = nextEvent<any>(teacher, 'registration-invite:changed');
+    const revoked = await api(ctx.base, teacherCookie, `/api/registration-invites/${created.id}/revoke`, { method: 'POST', body: JSON.stringify({ version: 1 }) });
+    expect(revoked.status).toBe(200); expect(await revokedEvent).toMatchObject({ id: created.id, status: 'revoked', version: 2 });
+  });
+
+  it('broadcasts safe invite consumption after registration commits', async () => {
+    const adminCookie = await login(ctx.base, 'admin'); const teacherCookie = await login(ctx.base, 'teacher');
+    const teacher = await connect(teacherCookie);
+    const created = (await (await api(ctx.base, adminCookie, '/api/registration-invites', { method: 'POST' })).json()).invite;
+    const consumedEvent = nextEvent<any>(teacher, 'registration-invite:changed');
+    const registered = await fetch(`${ctx.base}/api/auth/register`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({
+      username: 'realtime.registered', displayName: '实时注册成员', password: 'LongPassword123!', passwordConfirm: 'LongPassword123!', inviteCode: created.code,
+    }) });
+    expect(registered.status).toBe(201);
+    const consumed = await consumedEvent;
+    expect(consumed).toMatchObject({ id: created.id, codeHint: created.codeHint, status: 'used', usedBy: { username: 'realtime.registered' }, version: 2 });
+    expect(JSON.stringify(consumed)).not.toContain(created.code); expect(consumed).not.toHaveProperty('code'); expect(consumed).not.toHaveProperty('codeHash');
+  });
 });

@@ -16,6 +16,19 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, demo INTEGER NOT NULL DEFAULT 0,
   version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS registration_invites (
+  id INTEGER PRIMARY KEY,
+  code_hash TEXT NOT NULL UNIQUE,
+  code_hint TEXT NOT NULL,
+  created_by INTEGER NOT NULL REFERENCES users(id),
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_by INTEGER REFERENCES users(id),
+  used_at TEXT,
+  revoked_by INTEGER REFERENCES users(id),
+  revoked_at TEXT,
+  version INTEGER NOT NULL DEFAULT 1
+);
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL
 );
@@ -73,6 +86,9 @@ CREATE INDEX IF NOT EXISTS idx_purchase_weekly_entries_week_start ON purchase_we
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_target_status ON inbound_requests(target_user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_requester_status ON inbound_requests(requester_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_registration_invites_created_by ON registration_invites(created_by);
+CREATE INDEX IF NOT EXISTS idx_registration_invites_expires_at ON registration_invites(expires_at);
+CREATE INDEX IF NOT EXISTS idx_registration_invites_used_by ON registration_invites(used_by);
 PRAGMA optimize;
 `;
 
