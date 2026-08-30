@@ -1712,3 +1712,140 @@ git diff --check: 退出码 0；无空白错误（仅 LF→CRLF 提示）
 package.json / package-lock.json diff: 无输出
 bundle required: 采购周次 / 本周 / 历史 — PRESENT
 ```
+
+## 2026-08-30 — V1.5.0 单层酸柜 C
+
+工作目录：`D:\hermes\worktrees\lab-chemical-manager-v1-5-acid-cabinet`
+
+### Slice 1 — shared cabinet metadata/rules
+
+RED：`npm test -- --run server/test/cabinets.test.ts`
+
+```text
+FAIL server/test/cabinets.test.ts
+Error: Cannot find module '../../shared/cabinets.js'
+Test Files 1 failed (1); Tests no tests; 退出码 1
+```
+
+GREEN：`npm test -- --run server/test/cabinets.test.ts`
+
+```text
+✓ server/test/cabinets.test.ts (2 tests)
+Test Files 1 passed (1); Tests 2 passed (2); 退出码 0
+```
+
+### Slice 2 — strict Zod direct/move/proxy/query validation
+
+RED：`npm test -- --run server/test/cabinet-validation.test.ts`
+
+```text
+❯ server/test/cabinet-validation.test.ts (2 tests | 2 failed)
+expected false to be true
+Cannot read properties of undefined (reading 'parse')
+Test Files 1 failed (1); Tests 2 failed (2); 退出码 1
+```
+
+GREEN：`npm test -- --run server/test/cabinet-validation.test.ts server/test/cabinets.test.ts`
+
+```text
+✓ server/test/cabinets.test.ts (2 tests)
+✓ server/test/cabinet-validation.test.ts (2 tests)
+Test Files 2 passed (2); Tests 4 passed (4); 退出码 0
+```
+
+### Slice 3 — V1.4 file SQLite rebuild/rollback/idempotence
+
+RED：`npm test -- --run server/test/database-acid-cabinet.test.ts`
+
+```text
+FAIL server/test/database-acid-cabinet.test.ts
+Error: Cannot find module '../src/cabinet-migration.js'
+Test Files 1 failed (1); Tests no tests; 退出码 1
+```
+
+GREEN：`npm test -- --run server/test/database-acid-cabinet.test.ts`
+
+```text
+✓ server/test/database-acid-cabinet.test.ts (2 tests)
+Test Files 1 passed (1); Tests 2 passed (2); 退出码 0
+```
+
+覆盖：10 张业务表逐表 row-count/JSON-SHA；approved `chemical_id` FK；旧 id/version/timestamp；必需索引与额外自定义索引；C1/C2 CHECK；二次打开 schema/行幂等；故障 FK 的 ROLLBACK、foreign_keys 恢复和临时表清理。
+
+### Slice 4 — API C direct/move/proxy
+
+RED：`npm test -- --run server/test/inventory.test.ts server/test/inbound-requests.test.ts`
+
+```text
+❯ server/test/inventory.test.ts (4 tests | 1 failed)
+  expected 400 to be 200
+❯ server/test/inbound-requests.test.ts (6 tests | 1 failed)
+  expected false to be true
+Test Files 2 failed (2); Tests 2 failed | 8 passed (10); 退出码 1
+```
+
+GREEN：`npm test -- --run server/test/inventory.test.ts server/test/inbound-requests.test.ts server/test/cabinet-validation.test.ts`
+
+```text
+✓ server/test/cabinet-validation.test.ts (2 tests)
+✓ server/test/inventory.test.ts (4 tests)
+✓ server/test/inbound-requests.test.ts (6 tests)
+Test Files 3 passed (3); Tests 12 passed (12); 退出码 0
+```
+
+### Slice 5–6 — three-cabinet UI/forms
+
+RED：`npm test -- --run client/src/App.test.tsx client/src/inventory-forms.test.tsx client/src/inbound-requests-ui.test.tsx`
+
+```text
+❯ client/src/inventory-forms.test.tsx (4 tests | 4 failed)
+❯ client/src/inbound-requests-ui.test.tsx (5 tests | 1 failed)
+❯ client/src/App.test.tsx (8 tests | 1 failed)
+Test Files 3 failed (3); Tests 6 failed | 11 passed (17); 退出码 1
+```
+
+GREEN：同命令。
+
+```text
+✓ client/src/inventory-forms.test.tsx (4 tests)
+✓ client/src/inbound-requests-ui.test.tsx (5 tests)
+✓ client/src/App.test.tsx (8 tests)
+Test Files 3 passed (3); Tests 17 passed (17); 退出码 0
+```
+
+Bundle phrase RED（初次审计）：`C · 酸柜` 缺失为连续 token；`单层`、`仅酸性物质` 存在。将完整 label 集中进 cabinet metadata 后 GREEN：
+
+```text
+client/dist/assets\index-C8dVfrO-.js:C · 酸柜
+client/dist/assets\index-C8dVfrO-.js:单层
+client/dist/assets\index-C8dVfrO-.js:仅酸性物质
+```
+
+### Slice 7 / final acceptance
+
+Acceptance 扩展在前六个 RED→GREEN 切片之后加入，首次执行即 GREEN（底层行为已由前述切片驱动完成）：
+
+```text
+PASS acid cabinet: C1 direct inbound/query, C2 rejection, and bidirectional movement
+PASS proxy inbound: C1 approval, C2 rejection, pending scopes, authorization/version conflicts, reject/withdraw, realtime
+ACCEPTANCE OK (33 audit entries verified)
+```
+
+正式 V1.4 数据库只读源的一致副本验证：
+
+```text
+PASS V1.4 production database copy: 10 legacy tables unchanged; FK/index checks passed; C1 chemical/request writes passed; C2 constraints passed; second open idempotent
+```
+
+### Final verification
+
+```text
+npm test: 退出码 0；Test Files 27 passed (27)；Tests 84 passed (84)
+npm run lint: 退出码 0
+npm run build: 退出码 0；72 modules transformed；index-C8dVfrO-.js / index-W21ZEktu.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (33 audit entries verified)
+verify-acid-cabinet-upgrade: 退出码 0；10 legacy tables unchanged；FK/index/C1/C2/idempotence passed
+git diff --check: 退出码 0；无空白错误（仅 LF→CRLF 提示）
+package.json / package-lock.json diff: 无输出
+未启动或修改端口 3000；未 commit
+```

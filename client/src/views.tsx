@@ -2,12 +2,12 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import { api, ApiError } from './api.js';
 import { CabinetBoard, Empty, Modal, Status } from './components.js';
 import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, PurchaseWeekSummary, UserView } from './types.js';
-import { roles } from '../../shared/types.js';
+import { roles, type Cabinet } from '../../shared/types.js';
 import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type ProcurementRequestType, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
 import { purchaseStatusOptions } from './purchase-status.js';
 import { ProcurementTypeFilter, PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
-import { buildDirectInboundPayload, buildMovePayload, InboundOwnerDisplay, ShelfOptions } from './inventory-forms.js';
+import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
 import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
 import { accountRolePrompt, RoleOptions, roleLabel } from './role-labels.js';
 import { choosePurchaseWeek, purchaseWeekCatalogPath, PurchaseWeekPanel, shouldShowPurchaseWeekPanel } from './purchase-weekly-ui.js';
@@ -24,7 +24,7 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
   ]).then(([stock, people, incomingRequests, myRequests]) => { setChemicals(stock.chemicals); setMembers(people.users); setIncoming(incomingRequests.requests); setMine(myRequests.requests); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, search]);
   async function decide(request: InboundRequest, decision: 'approved' | 'rejected') { const comment = prompt(decision === 'approved' ? '同意说明（可选）' : '拒绝说明（可选）') ?? undefined; try { await api(`/inbound-requests/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ decision, comment: comment || undefined, version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
   async function withdraw(request: InboundRequest) { if (!confirm(`确认撤销“${request.name}”的代入库申请？`)) return; try { await api(`/inbound-requests/${request.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
-  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。柜层由上到下为 1–5。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层，C 酸柜为单层。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
     <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
     {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={setSelected} />
     {proxyQueue && <ProxyInboundQueueModal scope={proxyQueue} requests={proxyQueue === 'incoming' ? incoming : mine} onClose={() => setProxyQueue(null)} onDecision={decide} onWithdraw={withdraw} />}
@@ -35,11 +35,12 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
 
 function InboundModal({ user, members, onClose, onDone }: { user: UserView; members: UserView[]; onClose: () => void; onDone: (message?: string) => void }) {
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [proxyMode, setProxyMode] = useState(false); const [targetUserId, setTargetUserId] = useState('');
+  const [cabinet, setCabinet] = useState<Cabinet>('A'); const [shelf, setShelf] = useState('1');
   return <Modal title="药品入库" onClose={onClose}><form className="form-grid" onSubmit={async (event) => {
     event.preventDefault(); setBusy(true); setError(''); const data = new FormData(event.currentTarget);
     try {
       const date = new Date(String(data.get('inboundAt'))); if (Number.isNaN(date.getTime())) throw new Error('入库时间无效');
-      const fields = { name: data.get('name'), specification: data.get('specification'), inboundAt: date.toISOString(), cabinet: data.get('cabinet'), shelf: data.get('shelf') };
+      const fields = { name: data.get('name'), specification: data.get('specification'), inboundAt: date.toISOString(), cabinet, shelf };
       if (proxyMode) { const payload = buildProxyInboundPayload(fields, targetUserId); await api('/inbound-requests', { method: 'POST', body: JSON.stringify(payload) }); const target = members.find((member) => member.id === payload.targetUserId); onDone(`已发送给 ${target?.displayName ?? '对方'}，等待对方同意`); }
       else { await api('/chemicals', { method: 'POST', body: JSON.stringify(buildDirectInboundPayload(fields)) }); onDone(); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : messageOf(reason)); } finally { setBusy(false); }
@@ -47,8 +48,8 @@ function InboundModal({ user, members, onClose, onDone }: { user: UserView; memb
     <label>药品名称<input name="name" required autoFocus /></label><label>规格<input name="specification" required /></label>
     <InboundOwnerDisplay displayName={user.displayName} />
     <label>入库时间<input name="inboundAt" type="datetime-local" required defaultValue={new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16)} /></label>
-    <label>柜号<select name="cabinet"><option value="A">A · 常温柜</option><option value="B">B · 冷藏柜</option></select></label>
-    <label>柜层<select name="shelf"><ShelfOptions /></select></label>
+    <label>柜号<select name="cabinet" value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select></label>
+    <label>柜层<ShelfSelect name="shelf" cabinet={cabinet} value={shelf} onChange={setShelf} /></label>
     {error && <Status kind="error">{error}</Status>}<InboundModeControls proxyMode={proxyMode} currentUser={user} members={members} targetUserId={targetUserId} busy={busy} onProxyMode={(enabled) => { setProxyMode(enabled); setTargetUserId(''); }} onTarget={setTargetUserId} onCancel={onClose} />
   </form></Modal>;
 }
@@ -58,7 +59,7 @@ function ChemicalModal({ chemical, onClose, onDone }: { chemical: Chemical; onCl
   async function move() { setError(''); let payload; try { payload = buildMovePayload(cabinet, shelf, chemical.version); } catch (reason) { setError(reason instanceof Error ? reason.message : '调动参数无效'); return; } setBusy(true); try { await api(`/chemicals/${chemical.id}/move`, { method: 'PATCH', body: JSON.stringify(payload) }); onDone(); } catch (reason) { setError(messageOf(reason)); } finally { setBusy(false); } }
   async function discard() { if (!confirm(`确认废弃“${chemical.name}”？该操作会保留审计记录。`)) return; const reason = prompt('废弃原因（可选）') ?? undefined; setBusy(true); try { await api(`/chemicals/${chemical.id}/discard`, { method: 'PATCH', body: JSON.stringify({ confirmed: true, reason: reason || undefined, version: chemical.version }) }); onDone(); } catch (failure) { setError(messageOf(failure)); } finally { setBusy(false); } }
   return <Modal title={chemical.name} onClose={onClose}><dl className="details"><dt>规格</dt><dd>{chemical.specification}</dd><dt>归属人</dt><dd>{chemical.owner.displayName}</dd><dt>入库操作</dt><dd>{chemical.inboundOperator.displayName}</dd><dt>入库时间</dt><dd>{formatTime(chemical.inboundAt)}</dd><dt>当前位置</dt><dd>{chemical.cabinet} 柜 {chemical.shelf} 层</dd><dt>版本</dt><dd>{chemical.version}</dd></dl>
-    <fieldset><legend>调动位置</legend><div className="inline-fields"><select value={cabinet} onChange={(event) => setCabinet(event.target.value as 'A' | 'B')}><option value="A">A</option><option value="B">B</option></select><select value={shelf} onChange={(event) => setShelf(event.target.value)}><ShelfOptions /></select><button className="primary" disabled={busy} onClick={move}>调动</button></div></fieldset>
+    <fieldset><legend>调动位置</legend><div className="inline-fields"><select value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select><ShelfSelect cabinet={cabinet} value={shelf} onChange={setShelf} /><button className="primary" disabled={busy} onClick={move}>调动</button></div></fieldset>
     {error && <Status kind="error">{error}</Status>}<div className="danger-zone"><button className="danger" disabled={busy} onClick={discard}>废弃药品</button></div>
   </Modal>;
 }

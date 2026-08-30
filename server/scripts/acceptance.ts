@@ -41,8 +41,8 @@ async function decide(cookie: string, purchase: any, decision: 'approved' | 'def
 async function markPurchased(cookie: string, purchase: any) {
   return (await json(await request(`/purchases/${purchase.id}/purchased`, cookie, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }))).purchase;
 }
-async function createInboundRequest(cookie: string, targetUserId: number, name: string) {
-  return (await json(await request('/inbound-requests', cookie, { method: 'POST', body: JSON.stringify({ targetUserId, name, specification: 'HPLC 4L', inboundAt: new Date().toISOString(), cabinet: 'B', shelf: 2 }) }), 201)).request;
+async function createInboundRequest(cookie: string, targetUserId: number, name: string, cabinet: 'A' | 'B' | 'C' = 'B', shelf = 2) {
+  return (await json(await request('/inbound-requests', cookie, { method: 'POST', body: JSON.stringify({ targetUserId, name, specification: 'HPLC 4L', inboundAt: new Date().toISOString(), cabinet, shelf }) }), 201)).request;
 }
 
 try {
@@ -74,8 +74,19 @@ try {
   assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '越权归属', specification: '1 瓶', ownerId: bob.user.id, inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 2 }) })).status, 400);
   console.log('PASS inventory/realtime: inbound, cross-owner move, invalid shelf, discard, two Socket.IO clients');
 
-  const pendingEvent = event(aliceSocket, 'inbound-request:changed'); const proxy = await createInboundRequest(alice.cookie, bob.user.id, '验收代入库乙腈');
-  assert.equal((await pendingEvent).status, 'pending'); assert.equal((await json(await request('/chemicals?search=验收代入库乙腈', alice.cookie))).chemicals.length, 0);
+  assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '错误酸柜', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 2 }) })).status, 400);
+  const acid = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收盐酸', specification: 'AR 500mL', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 1 }) }), 201)).chemical;
+  assert.equal((await json(await request('/chemicals?cabinet=C', alice.cookie))).chemicals.some((item: any) => item.id === acid.id), true);
+  assert.equal((await json(await request('/chemicals?cabinet=C&shelf=1', alice.cookie))).chemicals.some((item: any) => item.id === acid.id), true);
+  assert.equal((await request('/chemicals?cabinet=C&shelf=2', alice.cookie)).status, 400);
+  const acidInA = (await json(await request(`/chemicals/${acid.id}/move`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'A', shelf: 3, version: acid.version }) }))).chemical;
+  const acidBackInC = (await json(await request(`/chemicals/${acid.id}/move`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'C', shelf: 1, version: acidInA.version }) }))).chemical;
+  assert.deepEqual({ cabinet: acidBackInC.cabinet, shelf: acidBackInC.shelf }, { cabinet: 'C', shelf: 1 });
+  console.log('PASS acid cabinet: C1 direct inbound/query, C2 rejection, and bidirectional movement');
+
+  assert.equal((await request('/inbound-requests', alice.cookie, { method: 'POST', body: JSON.stringify({ targetUserId: bob.user.id, name: '错误代入库酸', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 2 }) })).status, 400);
+  const pendingEvent = event(aliceSocket, 'inbound-request:changed'); const proxy = await createInboundRequest(alice.cookie, bob.user.id, '验收代入库盐酸', 'C', 1);
+  assert.equal((await pendingEvent).status, 'pending'); assert.equal((await json(await request('/chemicals?search=验收代入库盐酸', alice.cookie))).chemicals.length, 0);
   assert((await json(await request('/inbound-requests?scope=mine', alice.cookie))).requests.some((item: any) => item.id === proxy.id));
   assert((await json(await request('/inbound-requests?scope=incoming', bob.cookie))).requests.some((item: any) => item.id === proxy.id));
   assert.equal((await request(`/inbound-requests/${proxy.id}/decision`, teacher.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: proxy.version }) })).status, 403);
@@ -84,6 +95,7 @@ try {
   const approvedProxy = await json(await request(`/inbound-requests/${proxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', comment: '验收同意', version: proxy.version }) }));
   assert.equal((await approvedEvent).status, 'approved'); assert.equal((await proxyChemicalEvent).id, approvedProxy.chemical.id);
   assert.equal(approvedProxy.chemical.owner.id, bob.user.id); assert.equal(approvedProxy.chemical.inboundOperator.id, alice.user.id);
+  assert.deepEqual({ cabinet: approvedProxy.chemical.cabinet, shelf: approvedProxy.chemical.shelf }, { cabinet: 'C', shelf: 1 });
   assert.equal((await request(`/inbound-requests/${proxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: approvedProxy.request.version }) })).status, 409);
   const rejectableProxy = await createInboundRequest(alice.cookie, bob.user.id, '验收拒绝代入库');
   const rejectedProxy = (await json(await request(`/inbound-requests/${rejectableProxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'rejected', comment: '验收拒绝', version: rejectableProxy.version }) }))).request;
@@ -91,7 +103,7 @@ try {
   const withdrawnProxy = (await json(await request(`/inbound-requests/${withdrawableProxy.id}/withdraw`, alice.cookie, { method: 'POST', body: JSON.stringify({ version: withdrawableProxy.version }) }))).request;
   assert.equal(rejectedProxy.status, 'rejected'); assert.equal(withdrawnProxy.status, 'withdrawn');
   assert.equal((await json(await request('/chemicals?search=验收拒绝代入库', alice.cookie))).chemicals.length, 0); assert.equal((await json(await request('/chemicals?search=验收撤销代入库', alice.cookie))).chemicals.length, 0);
-  console.log('PASS proxy inbound: pending scopes, authorization/version conflicts, atomic approval, reject/withdraw, realtime');
+  console.log('PASS proxy inbound: C1 approval, C2 rejection, pending scopes, authorization/version conflicts, reject/withdraw, realtime');
 
   const normal = await createPurchase(alice.cookie, '普通试剂', 'normal'); const urgent = await createPurchase(alice.cookie, '加急试剂', 'urgent');
   const dangerous = await createPurchase(alice.cookie, '叠氮化钠', 'normal', true); const dangerousUrgent = await createPurchase(alice.cookie, '加急危险试剂', 'urgent', true); const rejectable = await createPurchase(bob.cookie, '驳回试剂', 'normal');

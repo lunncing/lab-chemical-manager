@@ -6,7 +6,8 @@ import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from
 import { asyncRoute, type AuthedRequest, HttpError, parseBody } from './http.js';
 import { getChemical } from './inventory.js';
 import { inboundRequestCreateSchema, inboundRequestDecisionSchema, versionSchema } from './validation.js';
-import type { InboundRequestStatus } from '../../shared/types.js';
+import type { Cabinet, InboundRequestStatus } from '../../shared/types.js';
+import { formatLocation } from '../../shared/cabinets.js';
 
 const requestSelect = `SELECT r.*,
   requester.username requester_username, requester.display_name requester_name,
@@ -21,7 +22,7 @@ function mapInboundRequest(row: Record<string, unknown>) {
     requester: { id: Number(row.requester_id), username: String(row.requester_username), displayName: String(row.requester_name) },
     targetUser: { id: Number(row.target_user_id), username: String(row.target_username), displayName: String(row.target_name) },
     name: String(row.name), specification: String(row.specification), inboundAt: String(row.inbound_at),
-    cabinet: row.cabinet as 'A' | 'B', shelf: Number(row.shelf), status: row.status as InboundRequestStatus,
+    cabinet: row.cabinet as Cabinet, shelf: Number(row.shelf), status: row.status as InboundRequestStatus,
     decisionComment: row.decision_comment === null ? null : String(row.decision_comment),
     chemicalId: row.chemical_id === null ? null : Number(row.chemical_id), version: Number(row.version),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
@@ -60,8 +61,8 @@ export function inboundRequestsRouter(db: Db, io: SocketServer): Router {
         (requester_id,target_user_id,name,specification,inbound_at,cabinet,shelf,status,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,'pending',?,?)`).run(req.user.id, input.targetUserId, input.name, input.specification, input.inboundAt, input.cabinet, input.shelf, now, now);
       const id = Number(result.lastInsertRowid); const inboundRequest = mapInboundRequest(requestRow(db, id));
-      const audit = insertAudit(db, { actorId: req.user.id, action: 'proxy_inbound_requested', objectType: 'inbound_request', objectId: id, summary: `向 ${target.display_name} 提交 ${input.name} 的代入库申请`, details: { targetUserId: input.targetUserId, cabinet: input.cabinet, shelf: input.shelf } }, now);
-      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'proxy_inbound', 'u.id=?', [input.targetUserId]), category: 'proxy_inbound', title: '代入库申请', body: `${req.user.displayName} 为您提交了 ${input.name} 的代入库申请，是否同意？`, objectType: 'inbound_request', objectId: id }, now);
+      const audit = insertAudit(db, { actorId: req.user.id, action: 'proxy_inbound_requested', objectType: 'inbound_request', objectId: id, summary: `向 ${target.display_name} 提交 ${input.name} 的代入库申请，位置 ${formatLocation(input.cabinet, input.shelf)}`, details: { targetUserId: input.targetUserId, cabinet: input.cabinet, shelf: input.shelf } }, now);
+      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'proxy_inbound', 'u.id=?', [input.targetUserId]), category: 'proxy_inbound', title: '代入库申请', body: `${req.user.displayName} 为您提交了 ${input.name} 的代入库申请，是否同意？目标位置 ${formatLocation(input.cabinet, input.shelf)}`, objectType: 'inbound_request', objectId: id }, now);
       return { inboundRequest, audit, notifications };
     });
     emitCommitted(io, 'inbound-request:changed', committed.inboundRequest, committed.audit, committed.notifications);
@@ -99,8 +100,9 @@ export function inboundRequestsRouter(db: Db, io: SocketServer): Router {
       db.prepare('UPDATE inbound_requests SET chemical_id=? WHERE id=?').run(chemicalId, id);
       const inboundRequest = mapInboundRequest(requestRow(db, id)); const chemical = getChemical(db, chemicalId);
       const approvalAudit = insertAudit(db, { actorId: req.user.id, action: 'proxy_inbound_approved', objectType: 'inbound_request', objectId: id, summary: `同意 ${current.requester_name} 提交的 ${current.name} 代入库申请`, details: { comment: input.comment, chemicalId } }, now);
-      const inboundAudit = insertAudit(db, { actorId: Number(current.requester_id), action: 'inventory_inbound', objectType: 'chemical', objectId: chemicalId, summary: `代 ${current.target_name} 入库 ${current.name} 至 ${current.cabinet}-${current.shelf}`, details: { cabinet: current.cabinet, shelf: current.shelf, ownerId: current.target_user_id, inboundRequestId: id } }, now);
-      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'proxy_inbound', 'u.id=?', [Number(current.requester_id)]), category: 'proxy_inbound', title: '代入库申请已同意', body: `${current.target_name} 已同意 ${current.name} 的代入库申请`, objectType: 'inbound_request', objectId: id }, now);
+      const location = formatLocation(current.cabinet as Cabinet, Number(current.shelf));
+      const inboundAudit = insertAudit(db, { actorId: Number(current.requester_id), action: 'inventory_inbound', objectType: 'chemical', objectId: chemicalId, summary: `代 ${current.target_name} 入库 ${current.name} 至 ${location}`, details: { cabinet: current.cabinet, shelf: current.shelf, ownerId: current.target_user_id, inboundRequestId: id } }, now);
+      const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'proxy_inbound', 'u.id=?', [Number(current.requester_id)]), category: 'proxy_inbound', title: '代入库申请已同意', body: `${current.target_name} 已同意 ${current.name} 的代入库申请，已入库至 ${location}`, objectType: 'inbound_request', objectId: id }, now);
       return { inboundRequest, chemical, audits: [approvalAudit, inboundAudit], notifications };
     });
     io.emit('inbound-request:changed', committed.inboundRequest); io.emit('chemical:changed', committed.chemical);

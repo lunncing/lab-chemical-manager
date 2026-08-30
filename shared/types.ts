@@ -5,6 +5,7 @@ export const notificationCategories = [
   'purchase_normal', 'purchase_urgent', 'approval', 'hazardous', 'account', 'proxy_inbound',
 ] as const;
 export type NotificationCategory = (typeof notificationCategories)[number];
+export type Cabinet = 'A' | 'B' | 'C';
 export type InboundRequestStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
 export type PurchaseType = 'normal' | 'urgent';
 export type PurchaseStatus = 'pending_normal' | 'pending_super' | 'approved' | 'purchased' | 'deferred' | 'rejected' | 'withdrawn';

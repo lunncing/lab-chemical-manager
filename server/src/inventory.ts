@@ -3,15 +3,17 @@ import type { Server as SocketServer } from 'socket.io';
 import type { Db } from './database.js';
 import { transaction } from './database.js';
 import { asyncRoute, type AuthedRequest, HttpError, parseBody } from './http.js';
-import { chemicalCreateSchema, discardSchema, moveSchema } from './validation.js';
+import { chemicalCreateSchema, chemicalQuerySchema, discardSchema, moveSchema } from './validation.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
+import { formatLocation } from '../../shared/cabinets.js';
+import type { Cabinet } from '../../shared/types.js';
 
 export function mapChemical(row: Record<string, unknown>) {
   return {
     id: Number(row.id), name: String(row.name), specification: String(row.specification),
     owner: { id: Number(row.owner_id), username: String(row.owner_username), displayName: String(row.owner_name) },
     inboundOperator: { id: Number(row.inbound_operator_id), username: String(row.operator_username), displayName: String(row.operator_name) },
-    inboundAt: String(row.inbound_at), cabinet: row.cabinet as 'A' | 'B', shelf: Number(row.shelf), status: row.status as 'active' | 'discarded',
+    inboundAt: String(row.inbound_at), cabinet: row.cabinet as Cabinet, shelf: Number(row.shelf), status: row.status as 'active' | 'discarded',
     discardReason: row.discard_reason === null ? null : String(row.discard_reason), version: Number(row.version), createdAt: String(row.created_at), updatedAt: String(row.updated_at),
   };
 }
@@ -29,19 +31,17 @@ export function getChemical(db: Db, id: number) {
 export function inventoryRouter(db: Db, io: SocketServer): Router {
   const router = Router();
   router.get('/', asyncRoute((request, res) => {
-    const req = request as AuthedRequest;
+    const req = request as AuthedRequest; const query = parseBody(chemicalQuerySchema, req.query);
     const conditions = [`c.status='active'`]; const params: Array<string | number> = [];
-    if (req.query.cabinet !== undefined) {
-      if (req.query.cabinet !== 'A' && req.query.cabinet !== 'B') throw new HttpError(400, '柜号仅允许 A 或 B', 'VALIDATION_ERROR');
-      conditions.push('c.cabinet=?'); params.push(req.query.cabinet);
+    if (query.cabinet !== undefined) {
+      conditions.push('c.cabinet=?'); params.push(query.cabinet);
     }
-    if (req.query.shelf !== undefined) {
-      const shelf = Number(req.query.shelf); if (!Number.isInteger(shelf) || shelf < 1 || shelf > 5) throw new HttpError(400, '柜层仅允许 1–5', 'VALIDATION_ERROR');
-      conditions.push('c.shelf=?'); params.push(shelf);
+    if (query.shelf !== undefined) {
+      conditions.push('c.shelf=?'); params.push(query.shelf);
     }
-    if (typeof req.query.search === 'string' && req.query.search.trim()) {
+    if (query.search) {
       conditions.push('(c.name LIKE ? OR c.specification LIKE ? OR owner.display_name LIKE ? OR owner.username LIKE ?)');
-      const term = `%${req.query.search.trim()}%`; params.push(term, term, term, term);
+      const term = `%${query.search}%`; params.push(term, term, term, term);
     }
     const rows = db.prepare(`${chemicalSelect} WHERE ${conditions.join(' AND ')} ORDER BY c.cabinet,c.shelf,c.name,c.id`).all(...params) as Array<Record<string, unknown>>;
     res.json({ chemicals: rows.map(mapChemical) });
@@ -60,7 +60,7 @@ export function inventoryRouter(db: Db, io: SocketServer): Router {
       const id = Number(result.lastInsertRowid);
       db.prepare(`INSERT INTO inventory_movements (chemical_id,operator_id,action,to_cabinet,to_shelf,created_at) VALUES (?,?,'inbound',?,?,?)`).run(id, req.user.id, input.cabinet, input.shelf, now);
       const chemical = getChemical(db, id);
-      const audit = insertAudit(db, { actorId: req.user.id, action: 'inventory_inbound', objectType: 'chemical', objectId: id, summary: `入库 ${input.name} 至 ${input.cabinet}-${input.shelf}`, details: { cabinet: input.cabinet, shelf: input.shelf, ownerId } }, now);
+      const audit = insertAudit(db, { actorId: req.user.id, action: 'inventory_inbound', objectType: 'chemical', objectId: id, summary: `入库 ${input.name} 至 ${formatLocation(input.cabinet, input.shelf)}`, details: { cabinet: input.cabinet, shelf: input.shelf, ownerId } }, now);
       const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'inventory_inbound'), category: 'inventory_inbound', title: '药品入库', body: `${input.name} 已入库至 ${input.cabinet} 柜 ${input.shelf} 层`, objectType: 'chemical', objectId: id }, now);
       return { chemical, audit, notifications };
     });
@@ -76,7 +76,7 @@ export function inventoryRouter(db: Db, io: SocketServer): Router {
       if (!result.changes) throw new HttpError(409, '药品已被其他人修改', 'CONFLICT');
       db.prepare(`INSERT INTO inventory_movements (chemical_id,operator_id,action,from_cabinet,from_shelf,to_cabinet,to_shelf,created_at) VALUES (?,?,'move',?,?,?,?,?)`).run(id, req.user.id, current.cabinet, current.shelf, input.cabinet, input.shelf, now);
       const chemical = getChemical(db, id);
-      const audit = insertAudit(db, { actorId: req.user.id, action: 'inventory_move', objectType: 'chemical', objectId: id, summary: `调动 ${current.name}：${current.cabinet}-${current.shelf} → ${input.cabinet}-${input.shelf}`, details: { from: { cabinet: current.cabinet, shelf: current.shelf }, to: { cabinet: input.cabinet, shelf: input.shelf } } }, now);
+      const audit = insertAudit(db, { actorId: req.user.id, action: 'inventory_move', objectType: 'chemical', objectId: id, summary: `调动 ${current.name}：${formatLocation(current.cabinet, current.shelf)} → ${formatLocation(input.cabinet, input.shelf)}`, details: { from: { cabinet: current.cabinet, shelf: current.shelf }, to: { cabinet: input.cabinet, shelf: input.shelf } } }, now);
       const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'inventory_move'), category: 'inventory_move', title: '药品调动', body: `${current.name} 已调动至 ${input.cabinet} 柜 ${input.shelf} 层`, objectType: 'chemical', objectId: id }, now);
       return { chemical, audit, notifications };
     });

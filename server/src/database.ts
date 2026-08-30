@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { hashPassword } from './security.js';
 import { beijingWeekStart } from './purchase-weeks.js';
+import { migrateAcidCabinetTables } from './cabinet-migration.js';
 import type { Role, UserView } from '../../shared/types.js';
 
 export type Db = DatabaseSync;
@@ -21,8 +22,8 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS chemicals (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, specification TEXT NOT NULL,
   owner_id INTEGER NOT NULL REFERENCES users(id), inbound_operator_id INTEGER NOT NULL REFERENCES users(id),
-  inbound_at TEXT NOT NULL, cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B')),
-  shelf INTEGER NOT NULL CHECK(shelf BETWEEN 1 AND 5), status TEXT NOT NULL CHECK(status IN ('active','discarded')),
+  inbound_at TEXT NOT NULL, cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C')),
+  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet='C' AND shelf=1)), status TEXT NOT NULL CHECK(status IN ('active','discarded')),
   discard_reason TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS inventory_movements (
@@ -60,7 +61,8 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE TABLE IF NOT EXISTS inbound_requests (
   id INTEGER PRIMARY KEY, requester_id INTEGER NOT NULL REFERENCES users(id), target_user_id INTEGER NOT NULL REFERENCES users(id),
   name TEXT NOT NULL, specification TEXT NOT NULL, inbound_at TEXT NOT NULL,
-  cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B')), shelf INTEGER NOT NULL CHECK(shelf BETWEEN 1 AND 5),
+  cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C')),
+  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet='C' AND shelf=1)),
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','withdrawn')) DEFAULT 'pending',
   decision_comment TEXT, chemical_id INTEGER REFERENCES chemicals(id), version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, decided_at TEXT, withdrawn_at TEXT
@@ -77,10 +79,16 @@ PRAGMA optimize;
 export function openDatabase(path: string, seedDemo = true): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
-  db.exec(schema);
-  backfillWeeklyPurchaseEntries(db);
-  if (seedDemo) seedDemoUsers(db);
-  return db;
+  try {
+    db.exec(schema);
+    migrateAcidCabinetTables(db);
+    backfillWeeklyPurchaseEntries(db);
+    if (seedDemo) seedDemoUsers(db);
+    return db;
+  } catch (error) {
+    db.close();
+    throw error;
+  }
 }
 
 function backfillWeeklyPurchaseEntries(db: Db): void {

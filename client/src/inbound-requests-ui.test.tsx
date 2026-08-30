@@ -29,6 +29,8 @@ describe('proxy inbound front-end controls', () => {
     expect(buildProxyInboundPayload({ name: '乙腈', specification: 'HPLC 4L', inboundAt: pending.inboundAt, cabinet: 'B', shelf: '2' }, '5')).toEqual({
       targetUserId: 5, name: '乙腈', specification: 'HPLC 4L', inboundAt: pending.inboundAt, cabinet: 'B', shelf: 2,
     });
+    expect(buildProxyInboundPayload({ name: '盐酸', specification: 'AR', inboundAt: pending.inboundAt, cabinet: 'C', shelf: '1' }, '5')).toMatchObject({ targetUserId: 5, cabinet: 'C', shelf: 1 });
+    expect(() => buildProxyInboundPayload({ name: '错误盐酸', specification: 'AR', inboundAt: pending.inboundAt, cabinet: 'C', shelf: '2' }, '5')).toThrow('C 柜仅允许第 1 层');
     expect(proxyInboundStatusLabel('approved')).toBe('已同意');
     const incomingActions = renderToStaticMarkup(<InboundRequestActions request={pending} currentUserId={bob.id} onDecision={() => undefined} onWithdraw={() => undefined} />);
     expect(incomingActions).toContain('同意'); expect(incomingActions).toContain('拒绝');

@@ -1,11 +1,29 @@
+import { cabinets, isCabinet, locationError, shelvesForCabinet } from '../../shared/cabinets.js';
+import type { Cabinet } from '../../shared/types.js';
+
 export interface MovePayload {
-  cabinet: 'A' | 'B';
+  cabinet: Cabinet;
   shelf: number;
   version: number;
 }
 
-export function ShelfOptions() {
-  return <>{[1, 2, 3, 4, 5].map((value) => <option value={value} key={value}>{value} 层</option>)}</>;
+export function CabinetOptions() {
+  return <>{cabinets.map((cabinet) => <option value={cabinet.id} key={cabinet.id}>{cabinet.label}{cabinet.id === 'C' ? '（仅酸性物质）' : ''}</option>)}</>;
+}
+
+export function ShelfOptions({ cabinet = 'A' }: { cabinet?: Cabinet }) {
+  return <>{shelvesForCabinet(cabinet).map((value) => <option value={value} key={value}>{value} 层</option>)}</>;
+}
+
+export function ShelfSelect({ cabinet, value, name, onChange }: { cabinet: Cabinet; value: string; name?: string; onChange: (value: string) => void }) {
+  return <select name={name} value={value} disabled={cabinet === 'C'} onChange={(event) => onChange(event.target.value)}><ShelfOptions cabinet={cabinet} /></select>;
+}
+
+export function locationAfterCabinetChange(cabinetValue: unknown, currentShelf: unknown): { cabinet: Cabinet; shelf: string } {
+  if (!isCabinet(cabinetValue)) throw new Error('柜号仅允许 A、B 或 C');
+  if (cabinetValue === 'C') return { cabinet: cabinetValue, shelf: '1' };
+  const shelf = Number(currentShelf);
+  return { cabinet: cabinetValue, shelf: shelvesForCabinet(cabinetValue).includes(shelf) ? String(shelf) : '1' };
 }
 
 export function InboundOwnerDisplay({ displayName }: { displayName: string }) {
@@ -20,16 +38,18 @@ export function buildDirectInboundPayload(fields: InboundFields) {
   if (!name) throw new Error('请填写药品名称');
   if (!specification) throw new Error('请填写规格');
   if (Number.isNaN(Date.parse(inboundAt))) throw new Error('入库时间无效');
-  if (fields.cabinet !== 'A' && fields.cabinet !== 'B') throw new Error('柜号必须是 A 或 B');
+  if (!isCabinet(fields.cabinet)) throw new Error('柜号仅允许 A、B 或 C');
   const shelf = Number(fields.shelf);
-  if (!Number.isInteger(shelf) || shelf < 1 || shelf > 5) throw new Error('柜层必须是 1–5 的整数');
+  const error = locationError(fields.cabinet, shelf);
+  if (error) throw new Error(fields.cabinet === 'C' ? error : '柜层必须是 1–5 的整数');
   return { name, specification, inboundAt, cabinet: fields.cabinet, shelf };
 }
 
 export function buildMovePayload(cabinet: unknown, shelfValue: unknown, version: unknown): MovePayload {
-  if (cabinet !== 'A' && cabinet !== 'B') throw new Error('柜号必须是 A 或 B');
+  if (!isCabinet(cabinet)) throw new Error('柜号仅允许 A、B 或 C');
   const shelf = Number(shelfValue);
-  if (!Number.isInteger(shelf) || shelf < 1 || shelf > 5) throw new Error('柜层必须是 1–5 的整数');
+  const error = locationError(cabinet, shelf);
+  if (error) throw new Error(cabinet === 'C' ? error : '柜层必须是 1–5 的整数');
   if (!Number.isInteger(version) || Number(version) < 1) throw new Error('药品版本无效');
   return { cabinet, shelf, version: Number(version) };
 }

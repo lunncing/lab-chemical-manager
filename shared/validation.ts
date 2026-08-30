@@ -1,5 +1,14 @@
 import { z } from 'zod';
 import { notificationCategories, roles } from './types.js';
+import { cabinetIds, locationError } from './cabinets.js';
+
+const cabinetSchema = z.enum(cabinetIds, { error: '柜号仅允许 A、B 或 C' });
+const shelfSchema = z.number({ error: '柜层必须是整数' });
+
+function validateLocation(value: { cabinet: unknown; shelf: unknown }, ctx: { addIssue(issue: { code: 'custom'; message: string; path: string[] }): void }) {
+  const message = locationError(value.cabinet, value.shelf);
+  if (message) ctx.addIssue({ code: 'custom', message, path: ['shelf'] });
+}
 
 export const loginSchema = z.object({ username: z.string().trim().min(1).max(80), password: z.string().min(1).max(200) }).strict();
 export const registrationSchema = z.object({
@@ -20,17 +29,25 @@ export const userUpdateSchema = z.object({
 export const chemicalCreateSchema = z.object({
   name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
   inboundAt: z.iso.datetime(),
-  cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5),
-}).strict();
-export const moveSchema = z.object({ cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5), version: z.number().int().positive() }).strict();
+  cabinet: cabinetSchema, shelf: shelfSchema,
+}).strict().superRefine(validateLocation);
+export const moveSchema = z.object({ cabinet: cabinetSchema, shelf: shelfSchema, version: z.number().int().positive() }).strict().superRefine(validateLocation);
 export const discardSchema = z.object({ confirmed: z.literal(true), reason: z.string().trim().max(500).optional(), version: z.number().int().positive() }).strict();
 export const inboundRequestCreateSchema = z.object({
   targetUserId: z.number().int().positive(), name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
-  inboundAt: z.iso.datetime(), cabinet: z.enum(['A', 'B']), shelf: z.number().int().min(1).max(5),
-}).strict();
+  inboundAt: z.iso.datetime(), cabinet: cabinetSchema, shelf: shelfSchema,
+}).strict().superRefine(validateLocation);
 export const inboundRequestDecisionSchema = z.object({
   decision: z.enum(['approved', 'rejected']), comment: z.string().trim().max(1000).optional(), version: z.number().int().positive(),
 }).strict();
+
+export const chemicalQuerySchema = z.object({
+  cabinet: cabinetSchema.optional(),
+  shelf: z.string().regex(/^[1-5]$/, '柜层仅允许 1–5').transform(Number).optional(),
+  search: z.string().trim().max(200).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.cabinet !== undefined && value.shelf !== undefined) validateLocation(value as { cabinet: unknown; shelf: unknown }, ctx);
+});
 
 export const purchaseCreateSchema = z.object({
   chemicalName: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),

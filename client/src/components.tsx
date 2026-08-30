@@ -1,5 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import type { PurchaseType, Role } from '../../shared/types.js';
+import { cabinets } from '../../shared/cabinets.js';
 import type { Chemical } from './types.js';
 
 export function canApprove(role: Role, type: PurchaseType): boolean {
@@ -9,11 +10,11 @@ export function canAdministerAccounts(role: Role): boolean { return role === 'su
 
 export function CabinetBoard({ chemicals, onChemical }: { chemicals: Chemical[]; onChemical: (chemical: Chemical) => void }) {
   return <div className="cabinet-grid">
-    {(['A', 'B'] as const).map((cabinet) => <section className={`cabinet cabinet-${cabinet.toLowerCase()}`} key={cabinet} aria-labelledby={`cabinet-${cabinet}`}>
-      <header><h2 id={`cabinet-${cabinet}`}>{cabinet} · {cabinet === 'A' ? '常温柜' : '冷藏柜'}</h2><span>{chemicals.filter((item) => item.cabinet === cabinet).length} 件在库</span></header>
-      <div className="shelves">{[1, 2, 3, 4, 5].map((shelf) => {
-        const items = chemicals.filter((item) => item.cabinet === cabinet && item.shelf === shelf);
-        return <section className="shelf" data-shelf={shelf} key={shelf} tabIndex={0} aria-label={`${cabinet} 柜 ${shelf} 层，${items.length} 件药品`}>
+    {cabinets.map((cabinet) => <section className={`cabinet cabinet-${cabinet.id.toLowerCase()}`} key={cabinet.id} aria-labelledby={`cabinet-${cabinet.id}`}>
+      <header><div><h2 id={`cabinet-${cabinet.id}`}>{cabinet.label}</h2>{cabinet.description && <p className="cabinet-description">{cabinet.description}</p>}</div><span>{chemicals.filter((item) => item.cabinet === cabinet.id).length} 件在库</span></header>
+      <div className="shelves">{cabinet.shelves.map((shelf) => {
+        const items = chemicals.filter((item) => item.cabinet === cabinet.id && item.shelf === shelf);
+        return <section className="shelf" data-shelf={shelf} key={shelf} tabIndex={0} aria-label={`${cabinet.id} 柜 ${shelf} 层，${items.length} 件药品`}>
           <div className="shelf-label"><b>{shelf}</b><span>{items.length} 件</span></div>
           <div className="chemical-list">{items.length ? items.map((item) => <button className="chemical-chip" key={item.id} onClick={() => onChemical(item)}>
             <strong>{item.name}</strong><small>{item.specification} · {item.owner.displayName}</small>

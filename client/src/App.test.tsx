@@ -42,14 +42,17 @@ describe('front-end critical behavior', () => {
     }
   });
 
-  it('renders two cabinets with five ordered, clickable shelves and chemical entries', () => {
+  it('renders A/B then the single-shelf acid cabinet with 11 ordered, clickable shelves', () => {
     const html = renderToStaticMarkup(<CabinetBoard chemicals={[{
       id: 1, name: '乙醇', specification: 'AR', cabinet: 'A', shelf: 1, status: 'active', version: 1,
       owner: { id: 4, username: 'member-a', displayName: '成员甲' }, inboundOperator: { id: 4, username: 'member-a', displayName: '成员甲' },
       inboundAt: '', createdAt: '', updatedAt: '', discardReason: null,
     }]} onChemical={() => undefined} />);
-    expect((html.match(/data-shelf=/g) ?? [])).toHaveLength(10);
-    expect(html).toContain('A · 常温柜'); expect(html).toContain('B · 冷藏柜'); expect(html).toContain('乙醇');
+    expect((html.match(/data-shelf=/g) ?? [])).toHaveLength(11);
+    expect(html).toContain('A · 常温柜'); expect(html).toContain('B · 冷藏柜'); expect(html).toContain('C · 酸柜');
+    expect(html).toContain('单层 · 仅酸性物质'); expect(html).toContain('乙醇');
+    expect(html.indexOf('A · 常温柜')).toBeLessThan(html.indexOf('B · 冷藏柜'));
+    expect(html.indexOf('B · 冷藏柜')).toBeLessThan(html.indexOf('C · 酸柜'));
     expect(html.indexOf('data-shelf="1"')).toBeLessThan(html.indexOf('data-shelf="5"'));
   });
 
