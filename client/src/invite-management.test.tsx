@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { GeneratedInviteNotice, InviteTable, createInvite, inviteStatusLabel, revokeInvite } from './invite-management.js';
+import { GeneratedInviteNotice, InviteRevokeDialog, InviteTable, createInvite, inviteStatusLabel, revokeInvite } from './invite-management.js';
 import type { CreatedRegistrationInvite, RegistrationInvite } from './types.js';
 
 const base: RegistrationInvite = {
@@ -39,5 +39,15 @@ describe('invite management UI', () => {
       expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1]?.body).toBeUndefined();
       expect(globalThis.fetch).toHaveBeenNthCalledWith(2, '/api/registration-invites/7/revoke', expect.objectContaining({ method: 'POST', body: JSON.stringify({ version: 1 }) }));
     } finally { globalThis.fetch = originalFetch; }
+  });
+
+  it('revokes through a contextual in-app danger dialog', () => {
+    const html = renderToStaticMarkup(<InviteRevokeDialog invite={base} onClose={() => undefined} onDone={() => undefined} />);
+    expect(html).toContain('role="dialog"');
+    expect(html).toContain('撤销邀请码');
+    expect(html).toContain(base.codeHint);
+    expect(html).toContain('撤销后不能再用于注册');
+    expect(html).toContain('确认撤销');
+    expect(html).toContain('class="danger"');
   });
 });

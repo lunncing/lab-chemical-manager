@@ -1,16 +1,19 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api, ApiError } from './api.js';
 import { CabinetBoard, Empty, Modal, Status } from './components.js';
 import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, PurchaseWeekSummary, UserView } from './types.js';
-import { roles, type Cabinet } from '../../shared/types.js';
+import type { Cabinet } from '../../shared/types.js';
 import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type ProcurementRequestType, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
 import { purchaseStatusOptions } from './purchase-status.js';
 import { ProcurementTypeFilter, PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
 import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
 import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
-import { accountRolePrompt, RoleOptions, roleLabel } from './role-labels.js';
+import { RoleOptions, roleLabel } from './role-labels.js';
 import { choosePurchaseWeek, purchaseWeekCatalogPath, PurchaseWeekPanel, shouldShowPurchaseWeekPanel } from './purchase-weekly-ui.js';
+import { ChemicalDiscardDialog, InboundRequestActionDialog, type InboundRequestDialogAction } from './inventory-action-dialogs.js';
+import { PurchaseActionDialog } from './purchase-action-dialog.js';
+import { AccountActionDialog, AccountRowActions, type AccountDialogAction } from './account-action-dialog.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
@@ -18,18 +21,21 @@ const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh
 export function InventoryView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
   const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState('');
   const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
+  const [discarding, setDiscarding] = useState<Chemical | null>(null); const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: InboundRequestDialogAction } | null>(null);
   useEffect(() => { Promise.all([
     api<{ chemicals: Chemical[] }>(`/chemicals${search ? `?search=${encodeURIComponent(search)}` : ''}`), api<{ users: UserView[] }>('/members'),
     api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming'), api<{ requests: InboundRequest[] }>('/inbound-requests?scope=mine'),
   ]).then(([stock, people, incomingRequests, myRequests]) => { setChemicals(stock.chemicals); setMembers(people.users); setIncoming(incomingRequests.requests); setMine(myRequests.requests); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, search]);
-  async function decide(request: InboundRequest, decision: 'approved' | 'rejected') { const comment = prompt(decision === 'approved' ? '同意说明（可选）' : '拒绝说明（可选）') ?? undefined; try { await api(`/inbound-requests/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ decision, comment: comment || undefined, version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
-  async function withdraw(request: InboundRequest) { if (!confirm(`确认撤销“${request.name}”的代入库申请？`)) return; try { await api(`/inbound-requests/${request.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: request.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
+  function decide(request: InboundRequest, decision: 'approved' | 'rejected') { setProxyQueue(null); setInboundAction({ request, action: decision }); }
+  function withdraw(request: InboundRequest) { setProxyQueue(null); setInboundAction({ request, action: 'withdraw' }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层，C 酸柜为单层。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
     <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
     {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={setSelected} />
     {proxyQueue && <ProxyInboundQueueModal scope={proxyQueue} requests={proxyQueue === 'incoming' ? incoming : mine} onClose={() => setProxyQueue(null)} onDecision={decide} onWithdraw={withdraw} />}
     {showInbound && <InboundModal user={user} members={members} onClose={() => setShowInbound(false)} onDone={(message) => { setShowInbound(false); setSuccess(message ?? '入库成功'); onChanged(); }} />}
-    {selected && <ChemicalModal chemical={selected} onClose={() => setSelected(null)} onDone={() => { setSelected(null); onChanged(); }} />}
+    {selected && <ChemicalModal chemical={selected} onClose={() => setSelected(null)} onDiscard={() => { setDiscarding(selected); setSelected(null); }} onDone={() => { setSelected(null); onChanged(); }} />}
+    {discarding && <ChemicalDiscardDialog chemical={discarding} onClose={() => setDiscarding(null)} onDone={() => { setDiscarding(null); setSuccess('药品已废弃'); onChanged(); }} />}
+    {inboundAction && <InboundRequestActionDialog request={inboundAction.request} action={inboundAction.action} onClose={() => setInboundAction(null)} onDone={() => { setInboundAction(null); onChanged(); }} />}
   </>;
 }
 
@@ -54,22 +60,13 @@ function InboundModal({ user, members, onClose, onDone }: { user: UserView; memb
   </form></Modal>;
 }
 
-function ChemicalModal({ chemical, onClose, onDone }: { chemical: Chemical; onClose: () => void; onDone: () => void }) {
+function ChemicalModal({ chemical, onClose, onDiscard, onDone }: { chemical: Chemical; onClose: () => void; onDiscard: () => void; onDone: () => void }) {
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [cabinet, setCabinet] = useState(chemical.cabinet); const [shelf, setShelf] = useState(String(chemical.shelf));
   async function move() { setError(''); let payload; try { payload = buildMovePayload(cabinet, shelf, chemical.version); } catch (reason) { setError(reason instanceof Error ? reason.message : '调动参数无效'); return; } setBusy(true); try { await api(`/chemicals/${chemical.id}/move`, { method: 'PATCH', body: JSON.stringify(payload) }); onDone(); } catch (reason) { setError(messageOf(reason)); } finally { setBusy(false); } }
-  async function discard() { if (!confirm(`确认废弃“${chemical.name}”？该操作会保留审计记录。`)) return; const reason = prompt('废弃原因（可选）') ?? undefined; setBusy(true); try { await api(`/chemicals/${chemical.id}/discard`, { method: 'PATCH', body: JSON.stringify({ confirmed: true, reason: reason || undefined, version: chemical.version }) }); onDone(); } catch (failure) { setError(messageOf(failure)); } finally { setBusy(false); } }
   return <Modal title={chemical.name} onClose={onClose}><dl className="details"><dt>规格</dt><dd>{chemical.specification}</dd><dt>归属人</dt><dd>{chemical.owner.displayName}</dd><dt>入库操作</dt><dd>{chemical.inboundOperator.displayName}</dd><dt>入库时间</dt><dd>{formatTime(chemical.inboundAt)}</dd><dt>当前位置</dt><dd>{chemical.cabinet} 柜 {chemical.shelf} 层</dd><dt>版本</dt><dd>{chemical.version}</dd></dl>
-    <fieldset><legend>调动位置</legend><div className="inline-fields"><select value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select><ShelfSelect cabinet={cabinet} value={shelf} onChange={setShelf} /><button className="primary" disabled={busy} onClick={move}>调动</button></div></fieldset>
-    {error && <Status kind="error">{error}</Status>}<div className="danger-zone"><button className="danger" disabled={busy} onClick={discard}>废弃药品</button></div>
+    <fieldset><legend>调动位置</legend><div className="inline-fields"><select value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select><ShelfSelect cabinet={cabinet} value={shelf} onChange={setShelf} /><button type="button" className="primary" disabled={busy} onClick={move}>调动</button></div></fieldset>
+    {error && <Status kind="error">{error}</Status>}<div className="danger-zone"><button type="button" className="danger" disabled={busy} onClick={onDiscard}>废弃药品</button></div>
   </Modal>;
-}
-
-async function performPurchaseAction(purchase: Purchase, actionName: PurchaseAction) {
-  if (actionName === 'edit') { const purpose = prompt('修改用途说明', purchase.purpose); if (!purpose) return false; await api(`/purchases/${purchase.id}`, { method: 'PATCH', body: JSON.stringify({ purpose, version: purchase.version }) }); }
-  else if (actionName === 'withdraw') { if (!confirm('确认撤销此申请？')) return false; await api(`/purchases/${purchase.id}/withdraw`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
-  else if (actionName === 'purchased') { if (!confirm(`确认“${purchase.chemicalName}”已采购？`)) return false; await api(`/purchases/${purchase.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }); }
-  else { const comment = actionName === 'approved' ? (prompt('审批意见（可选）') ?? '') : prompt(actionName === 'deferred' ? '推迟说明（必填）' : '驳回说明（必填）'); if (comment === null || (actionName !== 'approved' && !comment.trim())) return false; await api(`/purchases/${purchase.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: actionName, comment: comment || undefined, version: purchase.version }) }); }
-  return true;
 }
 
 const requestEmptyText: Record<PurchaseRequestViewMode, string> = {
@@ -80,6 +77,7 @@ const requestEmptyText: Record<PurchaseRequestViewMode, string> = {
 export function PurchasesView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
   const [purchases, setPurchases] = useState<Purchase[]>([]); const [mode, setMode] = useState<PurchaseRequestViewMode>('all'); const [status, setStatus] = useState(''); const [kind, setKind] = useState(''); const [hazardous, setHazardous] = useState(''); const [error, setError] = useState(''); const [showCreate, setShowCreate] = useState(false);
   const [weeks, setWeeks] = useState<PurchaseWeekSummary[]>([]); const [selectedWeekStart, setSelectedWeekStart] = useState('');
+  const [pendingAction, setPendingAction] = useState<{ purchase: Purchase; action: PurchaseAction } | null>(null);
   useEffect(() => {
     let cancelled = false;
     const load = shouldShowPurchaseWeekPanel(mode)
@@ -92,24 +90,27 @@ export function PurchasesView({ user, revision, onChanged }: { user: UserView; r
     load.then((value) => { if (!cancelled) { setPurchases(value.purchases); setError(''); } }).catch((reason) => { if (!cancelled) setError(messageOf(reason)); });
     return () => { cancelled = true; };
   }, [revision, mode, status, kind, hazardous, selectedWeekStart]);
-  async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
+  function action(purchase: Purchase, actionName: PurchaseAction) { setPendingAction({ purchase, action: actionName }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购</p><h1>采购申请</h1><p>全体成员可查看；修改、撤销和审批权限由服务端校验。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新建申请</button></header>
     <div className="tabs">{purchaseTabs(user.role, mode).map((tab) => <button key={tab.mode} aria-pressed={tab.pressed} onClick={() => setMode(tab.mode)}>{tab.label}</button>)}</div>
     {isPurchaseListMode(mode) && <div className="filters"><label>状态<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部</option>{purchaseStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>类型<select value={kind} onChange={(e) => setKind(e.target.value)}><option value="">全部</option><option value="normal">普通</option><option value="urgent">加急</option></select></label><label>危险品<select value={hazardous} onChange={(e) => setHazardous(e.target.value)}><option value="">全部</option><option value="true">是</option><option value="false">否</option></select></label></div>}
     {shouldShowPurchaseWeekPanel(mode) && <PurchaseWeekPanel weeks={weeks} selectedWeekStart={selectedWeekStart} purchases={purchases} onChange={setSelectedWeekStart} />}
     {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={requestEmptyText[mode]} onAction={action} />
     {showCreate && <PurchaseCreate onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); onChanged(); }} />}
+    {pendingAction && <PurchaseActionDialog purchase={pendingAction.purchase} action={pendingAction.action} onClose={() => setPendingAction(null)} onDone={() => { setPendingAction(null); onChanged(); }} />}
   </>;
 }
 
 export function PurchaseTaskView({ mode, user, revision, onChanged }: { mode: PurchaseTaskViewMode; user: UserView; revision: number; onChanged: () => void }) {
   const definition = purchaseTaskDefinition(mode); const [purchases, setPurchases] = useState<Purchase[]>([]); const [requestType, setRequestType] = useState<ProcurementRequestType>(''); const [error, setError] = useState('');
+  const [pendingAction, setPendingAction] = useState<{ purchase: Purchase; action: PurchaseAction } | null>(null);
   const path = procurementTaskPath(mode, requestType);
   useEffect(() => { api<{ purchases: Purchase[] }>(path).then((value) => { setPurchases(value.purchases); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [path, revision]);
-  async function action(purchase: Purchase, actionName: PurchaseAction) { try { if (await performPurchaseAction(purchase, actionName)) onChanged(); } catch (reason) { setError(messageOf(reason)); } }
+  function action(purchase: Purchase, actionName: PurchaseAction) { setPendingAction({ purchase, action: actionName }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购任务</p><h1>{definition.title}</h1><p>{mode === 'approvals' ? '处理需要您决定的采购申请。' : '确认已完成采购的药品。'}</p></div></header>
     <ProcurementTypeFilter mode={mode} value={requestType} onChange={setRequestType} />
     {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={definition.empty} onAction={action} />
+    {pendingAction && <PurchaseActionDialog purchase={pendingAction.purchase} action={pendingAction.action} onClose={() => setPendingAction(null)} onDone={() => { setPendingAction(null); onChanged(); }} />}
   </>;
 }
 
@@ -130,22 +131,25 @@ export function AuditEntries({ logs }: { logs: AuditLog[] }) {
 
 export function NotificationsView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: (unread?: number) => void }) {
   const [items, setItems] = useState<NotificationItem[]>([]); const [prefs, setPrefs] = useState<Array<{ category: string; enabled: boolean }>>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [category, setCategory] = useState<NotificationCategoryFilter>(''); const [readState, setReadState] = useState<NotificationReadFilter>('all'); const [error, setError] = useState('');
+  const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: 'approved' | 'rejected' } | null>(null);
   const filteredItems = useMemo(() => filterNotifications(items, category, readState), [items, category, readState]);
   const load = () => Promise.all([api<{ notifications: NotificationItem[]; unreadCount: number }>('/notifications'), api<{ preferences: Array<{ category: string; enabled: boolean }> }>('/notifications/preferences'), api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming')]).then(([messages, preferences, requests]) => { setItems(messages.notifications); setPrefs(preferences.preferences); setIncoming(requests.requests); onChanged(messages.unreadCount); }).catch((reason) => setError(messageOf(reason)));
   useEffect(() => { void load(); }, [revision]);
-  async function decide(request: InboundRequest, decision: 'approved' | 'rejected') { const comment = prompt(decision === 'approved' ? '同意说明（可选）' : '拒绝说明（可选）') ?? undefined; try { await api(`/inbound-requests/${request.id}/decision`, { method: 'POST', body: JSON.stringify({ decision, comment: comment || undefined, version: request.version }) }); await load(); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
+  function decide(request: InboundRequest, decision: 'approved' | 'rejected') { setInboundAction({ request, action: decision }); }
   return <><header className="page-header"><div><p className="eyebrow">MONITOR / 消息</p><h1>消息中心</h1><p>分类开关仅影响未来个人消息，不影响业务数据和公开日志。</p></div><button onClick={async () => { await api('/notifications/read-all', { method: 'POST' }); await load(); }}>全部已读</button></header>
     {error && <Status kind="error">{error}</Status>}<section className="preference-panel"><h2>通知偏好</h2><div className="preference-grid">{prefs.map((pref) => <label className="switch" key={pref.category}><input type="checkbox" checked={pref.enabled} onChange={async (event) => { await api('/notifications/preferences', { method: 'PUT', body: JSON.stringify({ category: pref.category, enabled: event.target.checked }) }); await load(); }} /><span>{notificationCategoryName(pref.category)}</span></label>)}</div></section>
     <div className="filters"><label>通知类别<select value={category} onChange={(event) => setCategory(event.target.value as NotificationCategoryFilter)}>{notificationCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>阅读状态<select value={readState} onChange={(event) => setReadState(event.target.value as NotificationReadFilter)}>{notificationReadOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><span>显示 {filteredItems.length} / 共 {items.length} 条</span></div>
     <div className="message-list">{filteredItems.map((item) => { const request = item.objectType === 'inbound_request' ? incoming.find((entry) => String(entry.id) === item.objectId) : undefined; return <article key={item.id} className={item.readAt ? 'read' : 'unread'}><button className="message-main" onClick={async () => { if (!item.readAt) { await api(`/notifications/${item.id}/read`, { method: 'PATCH' }); await load(); } }}><span className="message-dot" /><div><strong>{item.title}</strong><p>{item.body}</p><small>{notificationCategoryName(item.category)} · {formatTime(item.createdAt)}</small></div></button>{request && <InboundRequestActions request={request} currentUserId={user.id} onDecision={decide} onWithdraw={() => undefined} />}</article>; })}</div>{!items.length ? <Empty>暂无个人消息</Empty> : !filteredItems.length && <Empty>没有符合筛选条件的消息</Empty>}
+    {inboundAction && <InboundRequestActionDialog request={inboundAction.request} action={inboundAction.action} onClose={() => setInboundAction(null)} onDone={() => { setInboundAction(null); void load().then(() => onChanged()); }} />}
   </>;
 }
 
-export function AccountsView({ revision, onChanged }: { revision: number; onChanged: () => void }) {
-  const [users, setUsers] = useState<UserView[]>([]); const [showCreate, setShowCreate] = useState(false); const [error, setError] = useState('');
+export function AccountsView({ currentUser, revision, onChanged }: { currentUser: UserView; revision: number; onChanged: () => void }) {
+  const [users, setUsers] = useState<UserView[]>([]); const [showCreate, setShowCreate] = useState(false); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
+  const [pendingAction, setPendingAction] = useState<{ account: UserView; action: AccountDialogAction } | null>(null);
   useEffect(() => { api<{ users: UserView[] }>('/users').then((value) => setUsers(value.users)).catch((reason) => setError(messageOf(reason))); }, [revision]);
-  async function updateAccount(account: UserView, changes: Record<string, unknown>) { try { await api(`/users/${account.id}`, { method: 'PATCH', body: JSON.stringify({ ...changes, version: account.version }) }); onChanged(); } catch (reason) { setError(messageOf(reason)); } }
-  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 权限</p><h1>账号管理</h1><p>创建真实账号、调整角色或停用演示账号。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新增账号</button></header>{error && <Status kind="error">{error}</Status>}<div className="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>来源</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((account) => <tr key={account.id}><td>@{account.username}</td><td>{account.displayName}</td><td>{roleLabel(account.role)}</td><td>{account.demo ? '演示' : '实际'}</td><td>{account.active ? '启用' : '停用'}</td><td><div className="row-actions"><button onClick={async () => { const displayName = prompt('姓名', account.displayName); if (!displayName) return; const role = prompt(accountRolePrompt, account.role); if (!role || !roles.includes(role as UserView['role'])) { setError('角色无效'); return; } const password = prompt('新密码（留空表示不修改）') ?? ''; await updateAccount(account, { displayName, role, ...(password ? { password } : {}) }); }}>编辑</button><button onClick={() => updateAccount(account, { active: !account.active })}>{account.active ? '停用' : '启用'}</button></div></td></tr>)}</tbody></table></div>
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 权限</p><h1>账号管理</h1><p>停用可恢复；删除会匿名化且不可恢复。</p></div><button className="primary" onClick={() => setShowCreate(true)}>＋ 新增账号</button></header>{error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<div className="table-wrap"><table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>来源</th><th>状态</th><th>操作</th></tr></thead><tbody>{users.map((account) => <tr key={account.id}><td>@{account.username}</td><td>{account.displayName}</td><td>{roleLabel(account.role)}</td><td>{account.demo ? '演示' : '实际'}</td><td>{account.active ? '启用' : '停用'}</td><td><AccountRowActions account={account} currentUserId={currentUser.id} onAction={(target, action) => { setSuccess(''); setPendingAction({ account: target, action }); }} /></td></tr>)}</tbody></table></div>
     {showCreate && <Modal title="新增实际账号" onClose={() => setShowCreate(false)}><form className="form-grid" onSubmit={async (event) => { event.preventDefault(); const data = new FormData(event.currentTarget); try { await api('/users', { method: 'POST', body: JSON.stringify({ username: data.get('username'), displayName: data.get('displayName'), role: data.get('role'), password: data.get('password') }) }); setShowCreate(false); onChanged(); } catch (reason) { setError(messageOf(reason)); } }}><label>用户名<input name="username" required pattern="[a-zA-Z0-9._-]+" /></label><label>姓名<input name="displayName" required /></label><label>角色<select name="role"><RoleOptions /></select></label><label>初始密码<input name="password" type="password" minLength={10} required /></label><div className="form-actions"><button type="button" onClick={() => setShowCreate(false)}>取消</button><button className="primary">创建</button></div></form></Modal>}
+    {pendingAction && <AccountActionDialog account={pendingAction.account} action={pendingAction.action} onClose={() => setPendingAction(null)} onDone={() => { const completed = pendingAction.action; setPendingAction(null); setSuccess(completed === 'delete' ? '账号已删除' : completed === 'toggle' ? '账号状态已更新' : '账号已更新'); onChanged(); }} />}
   </>;
 }

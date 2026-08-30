@@ -14,7 +14,8 @@ CREATE TABLE IF NOT EXISTS users (
   id INTEGER PRIMARY KEY, username TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL,
   role TEXT NOT NULL CHECK(role IN ('member','normal_admin','super_admin','hazardous_buyer')),
   password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, demo INTEGER NOT NULL DEFAULT 0,
-  version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+  version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+  deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS registration_invites (
   id INTEGER PRIMARY KEY,
@@ -97,6 +98,7 @@ export function openDatabase(path: string, seedDemo = true): Db {
   const db = new DatabaseSync(path);
   try {
     db.exec(schema);
+    migrateDeletedAt(db);
     migrateAcidCabinetTables(db);
     backfillWeeklyPurchaseEntries(db);
     if (seedDemo) seedDemoUsers(db);
@@ -105,6 +107,13 @@ export function openDatabase(path: string, seedDemo = true): Db {
     db.close();
     throw error;
   }
+}
+
+function migrateDeletedAt(db: Db): void {
+  transaction(db, () => {
+    const columns = db.prepare(`PRAGMA table_info('users')`).all() as Array<{ name: string }>;
+    if (!columns.some(({ name }) => name === 'deleted_at')) db.exec('ALTER TABLE users ADD COLUMN deleted_at TEXT');
+  });
 }
 
 function backfillWeeklyPurchaseEntries(db: Db): void {

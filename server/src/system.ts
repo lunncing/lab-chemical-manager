@@ -14,6 +14,7 @@ import { purchasesRouter } from './purchases.js';
 import { inboundRequestsRouter } from './inbound-requests.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
 import { digestInviteCode, registrationInvitesRouter, registrationInviteView } from './registration-invites.js';
+import { deleteAccount } from './account-deletion.js';
 
 export interface RunningSystem { app: express.Express; httpServer: HttpServer; io: SocketServer; db: Db; close(): Promise<void>; }
 export interface SystemOptions { databasePath: string; seedDemo?: boolean; cookieSecure?: boolean; sessionDays?: number; }
@@ -42,7 +43,7 @@ export function createSystem(options: SystemOptions): RunningSystem {
     const token = cookieValue(header, 'lab_session');
     if (!token) return undefined;
     const row = db.prepare(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-      WHERE s.token_hash=? AND s.expires_at>? AND u.active=1`).get(digestToken(token), new Date().toISOString()) as Record<string, unknown> | undefined;
+      WHERE s.token_hash=? AND s.expires_at>? AND u.active=1 AND u.deleted_at IS NULL`).get(digestToken(token), new Date().toISOString()) as Record<string, unknown> | undefined;
     return row ? userView(row) : undefined;
   };
 
@@ -64,8 +65,8 @@ export function createSystem(options: SystemOptions): RunningSystem {
   app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
   app.post('/api/auth/login', asyncRoute((req, res) => {
     const input = parseBody(loginSchema, req.body);
-    const row = db.prepare('SELECT * FROM users WHERE username=?').get(input.username) as Record<string, unknown> | undefined;
-    if (!row || !row.active || !verifyPassword(input.password, String(row.password_hash))) throw new HttpError(401, '用户名或密码错误', 'INVALID_CREDENTIALS');
+    const row = db.prepare('SELECT * FROM users WHERE username=? AND active=1 AND deleted_at IS NULL').get(input.username) as Record<string, unknown> | undefined;
+    if (!row || !verifyPassword(input.password, String(row.password_hash))) throw new HttpError(401, '用户名或密码错误', 'INVALID_CREDENTIALS');
     const token = createSessionToken();
     const expires = new Date(Date.now() + (options.sessionDays ?? 7) * 86_400_000);
     db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)').run(digestToken(token), Number(row.id), expires.toISOString());
@@ -119,11 +120,11 @@ export function createSystem(options: SystemOptions): RunningSystem {
   app.use('/api/purchases', purchasesRouter(db, io));
   app.use('/api/registration-invites', registrationInvitesRouter(db, io));
   app.get('/api/members', (_req, res) => {
-    const rows = db.prepare('SELECT * FROM users WHERE active=1 ORDER BY display_name, id').all() as Array<Record<string, unknown>>;
+    const rows = db.prepare('SELECT * FROM users WHERE active=1 AND deleted_at IS NULL ORDER BY display_name, id').all() as Array<Record<string, unknown>>;
     res.json({ users: rows.map(userView) });
   });
   app.get('/api/users', roleRequired('super_admin'), (_req, res) => {
-    const rows = db.prepare('SELECT * FROM users ORDER BY id').all() as Array<Record<string, unknown>>;
+    const rows = db.prepare('SELECT * FROM users WHERE deleted_at IS NULL ORDER BY id').all() as Array<Record<string, unknown>>;
     res.json({ users: rows.map(userView) });
   });
   app.post('/api/users', roleRequired('super_admin'), asyncRoute((request, res) => {
@@ -145,11 +146,11 @@ export function createSystem(options: SystemOptions): RunningSystem {
     const req = request as AuthedRequest;
     const id = Number(req.params.id); const input = parseBody(userUpdateSchema, req.body);
     if (id === req.user.id && input.active === false) throw new HttpError(400, '不能停用当前账号');
-    const current = db.prepare('SELECT * FROM users WHERE id=?').get(id) as Record<string, unknown> | undefined;
+    const current = db.prepare('SELECT * FROM users WHERE id=? AND deleted_at IS NULL').get(id) as Record<string, unknown> | undefined;
     if (!current) throw new HttpError(404, '账号不存在');
     const now = new Date().toISOString();
     const committed = transaction(db, () => {
-      const result = db.prepare(`UPDATE users SET display_name=?, role=?, active=?, password_hash=?, version=version+1, updated_at=? WHERE id=? AND version=?`).run(
+      const result = db.prepare(`UPDATE users SET display_name=?, role=?, active=?, password_hash=?, version=version+1, updated_at=? WHERE id=? AND version=? AND deleted_at IS NULL`).run(
         input.displayName ?? String(current.display_name), input.role ?? String(current.role), input.active === undefined ? Number(current.active) : Number(input.active), input.password ? hashPassword(input.password) : String(current.password_hash), now, id, input.version,
       );
       if (result.changes === 0) throw new HttpError(409, '账号已被其他人修改', 'CONFLICT');
@@ -162,6 +163,13 @@ export function createSystem(options: SystemOptions): RunningSystem {
     emitCommitted(io, 'user:changed', committed.user, committed.audit, committed.notifications);
     if (input.active === false) io.in(`user:${id}`).disconnectSockets(true);
     res.json({ user: committed.user });
+  }));
+  app.delete('/api/users/:id', roleRequired('super_admin'), asyncRoute((request, res) => {
+    const req = request as AuthedRequest;
+    const committed = deleteAccount(db, req.user.id, Number(req.params.id));
+    emitCommitted(io, 'user:changed', committed.deleted, committed.audit, []);
+    io.in(`user:${committed.deleted.id}`).disconnectSockets(true);
+    res.json({ deleted: committed.deleted });
   }));
 
   const clientDist = resolve(process.cwd(), 'client/dist');

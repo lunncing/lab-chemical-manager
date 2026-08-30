@@ -74,7 +74,7 @@ export function App() {
       {activeView === 'procurement' && <PurchaseTaskView mode="procurement" user={user} revision={revision} onChanged={refresh} />}
       {activeView === 'audit' && <AuditView revision={revision} />}
       {activeView === 'notifications' && <NotificationsView user={user} revision={revision} onChanged={(count) => { if (count !== undefined) setUnread(count); else refresh(); }} />}
-      {activeView === 'accounts' && user.role === 'super_admin' && <AccountsView revision={revision} onChanged={refresh} />}
+      {activeView === 'accounts' && user.role === 'super_admin' && <AccountsView currentUser={user} revision={revision} onChanged={refresh} />}
       {activeView === 'invites' && approvalRoles.includes(user.role) && <InviteManagementView revision={revision} onChanged={refresh} />}
     </main>
   </div>;

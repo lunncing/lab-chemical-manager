@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 import type { PurchaseType, Role } from '../../shared/types.js';
 import { cabinets } from '../../shared/cabinets.js';
 import type { Chemical } from './types.js';
@@ -25,11 +25,36 @@ export function CabinetBoard({ chemicals, onChemical }: { chemicals: Chemical[];
   </div>;
 }
 
-export function Modal({ title, children, onClose }: { title: string; children: ReactNode; onClose: () => void }) {
-  useEffect(() => { const key = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; document.addEventListener('keydown', key); return () => document.removeEventListener('keydown', key); }, [onClose]);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-      <header><h2 id="modal-title">{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭弹窗">×</button></header>{children}
+export function Modal({ title, description, children, onClose, closeDisabled = false }: {
+  title: string; description?: string; children: ReactNode; onClose: () => void; closeDisabled?: boolean;
+}) {
+  const titleId = useId(); const descriptionId = useId(); const dialogRef = useRef<HTMLElement>(null);
+  const onCloseRef = useRef(onClose); const closeDisabledRef = useRef(closeDisabled);
+  onCloseRef.current = onClose; closeDisabledRef.current = closeDisabled;
+  useEffect(() => {
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const focusable = () => Array.from(dialogRef.current?.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
+    ) ?? []);
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape' && !closeDisabledRef.current) { event.preventDefault(); onCloseRef.current(); return; }
+      if (event.key !== 'Tab') return;
+      const controls = focusable(); const first = controls[0]; const last = controls.at(-1);
+      if (!first || !last) { event.preventDefault(); dialogRef.current?.focus(); return; }
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', key);
+    const initial = dialogRef.current?.querySelector<HTMLElement>(
+      '[autofocus], input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+    ) ?? focusable()[0] ?? dialogRef.current;
+    initial?.focus();
+    return () => { document.removeEventListener('keydown', key); if (previousFocus?.isConnected) previousFocus.focus(); };
+  }, []);
+  return <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (!closeDisabled && event.target === event.currentTarget) onClose(); }}>
+    <section ref={dialogRef} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1}>
+      <header><h2 id={titleId}>{title}</h2><button type="button" className="icon-button" onClick={onClose} aria-label="关闭弹窗" disabled={closeDisabled}>×</button></header>
+      {description && <p className="modal-description" id={descriptionId}>{description}</p>}{children}
     </section>
   </div>;
 }

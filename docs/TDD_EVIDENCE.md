@@ -1873,3 +1873,241 @@ git diff --check: 退出码 0（仅 LF→CRLF 提示）
 package.json / package-lock.json: diff 为空
 未启动或修改端口 3000；未访问远程网络；未 commit
 ```
+
+## 2026-08-30 — V1.7 Phase A 账号不可逆匿名删除
+
+工作目录：`D:\hermes\worktrees\lab-chemical-manager-v1-7-account-modals`
+
+基线/当前 HEAD：`9e343511b9ac2c2940b45f285b541d26aca5cb55`
+
+范围严格限定为 Phase A：`users.deleted_at` additive migration、deleted 排除、超级管理员删除 API、后端测试/acceptance/升级验证；未修改 `client/src` 交互代码。
+
+### Slice 1 — users.deleted_at additive/idempotent
+
+RED：`npm test -- --run server/test/database-account-deletion.test.ts`
+
+```text
+server/test/database-account-deletion.test.ts (2 tests | 2 failed)
+no such column: deleted_at
+expected undefined to match object { name: 'deleted_at', ... }
+Test Files 1 failed (1); Tests 2 failed (2)
+```
+
+GREEN：同命令。
+
+```text
+server/test/database-account-deletion.test.ts (2 tests)
+Test Files 1 passed (1); Tests 2 passed (2)
+```
+
+覆盖：V1.6 旧 `users` 行原列逐值不变、只追加一个 nullable `deleted_at TEXT`、旧行默认 NULL、新库带列、二次打开幂等。
+
+### Slice 2 — deleted availability exclusions
+
+RED：`npm test -- --run server/test/deleted-user-exclusion.test.ts`
+
+```text
+expected 200 to be 401
+Test Files 1 failed (1); Tests 1 failed (1)
+```
+
+GREEN：`npm test -- --run server/test/deleted-user-exclusion.test.ts server/test/auth.test.ts server/test/inbound-requests.test.ts`
+
+```text
+Test Files 3 passed (3); Tests 9 passed (9)
+```
+
+覆盖 active=1 但 deleted_at 非 NULL 的防绕过场景：session/me、login、users、members、PATCH、代入库目标、通知收件人全部排除 deleted；历史 JOIN 不排除，以保留匿名历史。
+
+### Slice 3 — DELETE /api/users/:id transaction and guards
+
+RED：`npm test -- --run server/test/account-deletion.test.ts`
+
+```text
+server/test/account-deletion.test.ts (4 tests | 4 failed)
+expected 404 to be 403
+expected 404 to be 200
+expected [404, 404] to deeply equal [200, 404]
+```
+
+GREEN（加入 stale/concurrent last-super HTTP 覆盖后）：同命令。
+
+```text
+server/test/account-deletion.test.ts (5 tests)
+Test Files 1 passed (1); Tests 5 passed (5)
+```
+
+覆盖：仅 super_admin、self 400、not-found/already-deleted 404、并发陈旧认证下 last-active-super 409、demo/非 demo 成功删除、`BEGIN IMMEDIATE` 串行 double delete、随机唯一墓碑 username、随机 scrypt 密码、active/demo/version/timestamp、session/notification/preference 原子清理、安全 `{id,mode}` realtime、目标 room disconnect、旧 cookie/login/PATCH 失效、管理员创建和邀请码注册复用原 username、删除审计无旧 username/displayName/password/hash。
+
+### Slice 4 — FK/history retention and migration regression
+
+账号删除测试建立 chemical/movement/purchase/inbound/invite/audit 历史后删除引用账号；所有业务行保留，`PRAGMA foreign_key_check` 为空，API 显示 `已删除用户 #<id>` 和随机墓碑 username。
+
+旧 V1.4 migration fixture 首次回归运行按预期 RED：只有 `users` hash 因允许追加的 NULL 列变化；fixture 改为继续 hash 所有旧 users 列，未放宽其他表。
+
+```text
+RED: database-acid-cabinet users sha256 mismatch only
+GREEN: database account/acid/weekly/invite migration suites — Test Files 4 passed; Tests 7 passed
+```
+
+### Acceptance extension
+
+`npm run acceptance` 使用 `listen(0)` 的候选 HTTP，新增账号删除矩阵：guards、清理、随机墓碑、socket event/disconnect、原 username 邀请码重注册、历史/FK、demo/非 demo、并发 double delete。
+
+```text
+PASS account deletion: guards, cleanup, random tombstone, safe realtime/disconnect, username reuse, history/FK retention, demo/non-demo, concurrent idempotence
+ACCEPTANCE OK (49 audit entries verified)
+```
+
+### V1.6 正式数据库只读源副本升级
+
+命令：
+
+```text
+node server/dist/server/scripts/verify-account-deletion-upgrade.js D:\hermes\worktrees\lab-chemical-manager-v1\data\lab-chemical-manager.sqlite
+```
+
+验证脚本只 `copyFileSync` 到系统临时目录并仅升级副本。首次运行因 Node SQLite PRAGMA 行是 null-prototype、expected 是普通对象而在 harness deepEqual 失败；规范化该 metadata 行后 GREEN：
+
+```text
+PASS V1.6 production database copy: 11 tables and 5 users unchanged; nullable deleted_at added once; FK clean; second open idempotent
+```
+
+### Final verification
+
+```text
+npm test: 退出码 0；Test Files 33 passed (33)；Tests 106 passed (106)，原 98 tests 全保留
+npm run lint: 退出码 0
+npm run build: 退出码 0；73 modules transformed；index-CweS2WaA.js / index-DQXGKifk.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (49 audit entries verified)
+V1.6 production-copy verifier: 退出码 0；11 tables / 5 users unchanged；deleted_at once；FK clean；second open idempotent
+git diff --check: 退出码 0（仅工作树 LF→CRLF 提示）
+git diff --exit-code -- package.json package-lock.json: 退出码 0；无输出
+git diff --exit-code -- client/src: 退出码 0；无输出
+HEAD: 9e343511b9ac2c2940b45f285b541d26aca5cb55；未 commit
+```
+
+未启动、停止或修改活动端口 3000；所有新增 HTTP 测试/acceptance 使用系统分配临时端口；未操作远程服务。
+
+## 2026-08-30 — V1.7 Phase B 统一应用内操作框
+
+范围严格限定为 Phase B：保留上述 Phase A 服务端匿名删除语义与测试，替换生产 client 的全部原生交互框，补齐账号删除 UI。未修改依赖、lock 或远程服务，未 commit，未访问/停止/修改活动端口 3000。
+
+基线先验：Phase A `npm test` 为 33 files / 106 tests 全绿；初始生产源码审计发现 10 个命中行、14 个原生 `prompt`/`confirm` 调用表达式。
+
+### Slice 1 — ActionDialog / Modal 基础
+
+RED：`npm test -- --run client/src/action-dialog.test.tsx`
+
+```text
+Cannot find module './action-dialog.js'
+Test Files 1 failed (1)
+```
+
+GREEN：共享 `ActionDialog` 使用现有 `Modal`，提供唯一 ARIA title/description、真实 form submit、busy/error/danger/disabled、Enter 提交、Shift+Enter 换行、IME composing 防误提交。`Modal` 增加初始焦点、Tab/Shift+Tab containment、Escape、focus restore 和 busy-safe close。
+
+```text
+client/src/action-dialog.test.tsx (3 tests)
+Test Files 1 passed (1); Tests 3 passed (3)
+```
+
+### Slice 2 — 药品废弃与代入库
+
+RED：`npm test -- --run client/src/inventory-action-dialogs.test.tsx`
+
+```text
+Cannot find module './inventory-action-dialogs.js'
+Test Files 1 failed (1)
+```
+
+GREEN：`ChemicalDiscardDialog` 显示药品/位置、可选 500 字原因、危险确认；`InboundRequestActionDialog` 在 InventoryView 与 NotificationsView 共用，显示申请/发起人/药品/位置并覆盖同意、拒绝、撤销。API route、comment normalization、version payload 保持不变。
+
+```text
+npm test -- --run client/src/inventory-action-dialogs.test.tsx client/src/inbound-requests-ui.test.tsx client/src/inventory-forms.test.tsx
+Test Files 3 passed (3); Tests 13 passed (13)
+```
+
+初次 GREEN 运行只暴露测试 harness 问题：React SSR 输出 `maxLength` 大小写，以及同一个 mock Response body 不能重复消费；修正 harness 后产品断言全绿。
+
+### Slice 3 — 采购六种操作
+
+RED：`npm test -- --run client/src/purchase-action-dialog.test.tsx`
+
+```text
+Cannot find module './purchase-action-dialog.js'
+Test Files 1 failed (1)
+```
+
+GREEN：我的申请和审批/采购任务页共用 `PurchaseActionDialog`；修改用途必填、撤销确认、通过意见可选、推迟/驳回说明必填且 whitespace 前端阻止、已采购显示药品与危险品属性。六条 API route、decision、comment、version 均由测试锁定。
+
+```text
+npm test -- --run client/src/purchase-action-dialog.test.tsx client/src/purchase-tasks-ui.test.tsx client/src/purchase-view.test.tsx
+Test Files 3 passed (3); Tests 15 passed (15)
+```
+
+### Slice 4 — 账号编辑/启停/删除
+
+RED：`npm test -- --run client/src/account-action-dialog.test.tsx`
+
+```text
+Cannot find module './account-action-dialog.js'
+Test Files 1 failed (1)
+```
+
+GREEN：编辑框包含姓名、四个既有中文角色 label、可选新密码与确认；空密码不发送，非空密码至少 10 字且两次一致。启用/停用均确认；删除框说明不可逆匿名化与历史保留，username 大小写/空格完全一致才启用危险提交。DELETE 无 body，成功文案为“账号已删除”，当前登录账号行无删除 DOM。
+
+```text
+npm test -- --run client/src/account-action-dialog.test.tsx client/src/role-labels.test.tsx client/src/App.test.tsx
+Test Files 3 passed (3); Tests 15 passed (15)
+```
+
+### Slice 5 — 邀请码撤销
+
+RED：既有 invite suite 新增渲染断言后，`InviteRevokeDialog` 为 undefined，4 项中 1 项失败。
+
+GREEN：active invite 的撤销按钮只打开危险 `ActionDialog`，继续复用既有 versioned revoke helper。
+
+```text
+npm test -- --run client/src/invite-management.test.tsx
+Test Files 1 passed (1); Tests 4 passed (4)
+```
+
+### Native-dialog guard 与生产 bundle
+
+新增 `native-dialog-guard.test.tsx` 递归扫描所有非测试生产 client TS/TSX。最终双重审计：
+
+```text
+production source native dialog calls: 0
+production bundle index-CqEUvjk4.js native dialog calls: 0
+bundle required modal phrases: 11/11
+```
+
+Bundle 命中文案包括：废弃原因、同意/拒绝说明、审批意见、推迟/驳回说明、新密码、确认新密码、确认删除、账号已删除、撤销邀请码。
+
+### 隔离候选 UI 验收
+
+构建后使用系统选择的 `60411` 端口和全新临时 SQLite；未连接端口 3000。通过浏览器实际检查：
+
+- 废弃、代入库同意/拒绝/撤销（库存与消息复用）、采购六操作、账号编辑/启停/删除、邀请码撤销均为 `role=dialog`，每一步 `getJsDialog()` 均为空。
+- 四个账号角色 label 精确；两次新密码不一致显示 inline alert；用途/推迟 whitespace 通过 Enter 提交时被前端阻止。
+- 删除确认初始/错误大小写 disabled，精确 `member-a` enabled；当前 `@teacher` 行删除按钮 count=0；未在浏览器点击最终删除。
+- 初验发现字段型 dialog 初始焦点落在关闭按钮；共享 Modal fallback selector 修复后初始焦点为首个 textarea/input。
+- 无字段 dialog 的 Shift+Tab 从关闭按钮 wrap 到确认按钮，Tab wrap 回关闭按钮；Escape 后 dialog count=0；console warn/error=[]。
+
+实际删除/账号安全语义由候选 HTTP acceptance 覆盖，浏览器验收不执行破坏性最终确认。
+
+### Final verification
+
+```text
+npm test: 退出码 0；Test Files 38 passed (38)；Tests 124 passed (124)，原 Phase A 106 tests 全保留
+npm run lint: 退出码 0
+npm run build: 退出码 0；77 modules transformed；index-CqEUvjk4.js / index-DQ3Tsmpa.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (49 audit entries verified)
+V1.6 production-copy verifier: 退出码 0；11 tables / 5 users unchanged；deleted_at once；FK clean；second open idempotent
+```
+
+清理 blocker：候选进程已停止且 60411 无 listener；浏览器 tab 已关闭。命令安全策略拒绝删除 workspace 外已核验的临时目录，故以下 disposable fixture 仍留在系统 temp（仅 `candidate.sqlite`，114688 bytes，可安全手工删除）：
+
+```text
+C:\Users\22808\AppData\Local\Temp\lab-chemical-manager-phase-b-e88b144268ab4b2789ee70b2496567cd
+```

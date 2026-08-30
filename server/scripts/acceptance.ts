@@ -4,6 +4,7 @@ import { io as connectSocket, type Socket } from 'socket.io-client';
 import { createSystem } from '../src/system.js';
 import { verifyPassword } from '../src/security.js';
 import { currentBeijingWeekStart, weekEnd } from '../src/purchase-weeks.js';
+import { deleteAccount } from '../src/account-deletion.js';
 
 const system = createSystem({ databasePath: ':memory:', seedDemo: true });
 const sockets: Socket[] = [];
@@ -15,8 +16,8 @@ const base = `http://127.0.0.1:${address.port}`;
 async function request(path: string, cookie?: string, init: RequestInit = {}) {
   return fetch(`${base}/api${path}`, { ...init, headers: { 'content-type': 'application/json', ...(cookie ? { cookie } : {}), ...init.headers } });
 }
-async function login(username: string) {
-  const response = await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username, password: 'Demo1234!' }) });
+async function login(username: string, password = 'Demo1234!') {
+  const response = await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username, password }) });
   assert.equal(response.status, 200, `${username} login`); const body = await response.json();
   return { cookie: response.headers.get('set-cookie')!.split(';')[0]!, user: body.user };
 }
@@ -214,8 +215,94 @@ try {
   await json(await request('/chemicals', bob.cookie, { method: 'POST', body: JSON.stringify({ name: '偏好屏蔽验证', specification: '1 瓶', inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 5 }) }), 201);
   const afterMessages = (await json(await request('/notifications', alice.cookie))).notifications;
   assert.equal(afterMessages.length, beforeMessages); assert((await json(await request('/chemicals?search=偏好屏蔽验证', alice.cookie))).chemicals.length === 1);
-  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4);
   console.log('PASS preferences/audit: future category blocked while inventory and immutable public audit remain');
+
+  const deletionCandidate = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
+    username: 'acceptance-delete', displayName: '验收删除管理员', role: 'normal_admin', password: 'AcceptanceDelete123!',
+  }) }), 201)).user;
+  assert.equal((await request(`/users/${deletionCandidate.id}`, alice.cookie, { method: 'DELETE' })).status, 403);
+  assert.equal((await request(`/users/${teacher.user.id}`, teacher.cookie, { method: 'DELETE' })).status, 400);
+  assert.equal((await request('/users/999999', teacher.cookie, { method: 'DELETE' })).status, 404);
+  assert.throws(() => deleteAccount(system.db, admin.user.id, teacher.user.id), (error: any) => error?.status === 409 && error?.message === '不能删除最后一个启用的超级管理员');
+
+  const candidateSession = await login('acceptance-delete', 'AcceptanceDelete123!');
+  const candidateInvite = await createInvite(candidateSession.cookie);
+  await json(await request('/notifications/preferences', candidateSession.cookie, { method: 'PUT', body: JSON.stringify({ category: 'account', enabled: false }) }));
+  const historyChemical = (await json(await request('/chemicals', candidateSession.cookie, { method: 'POST', body: JSON.stringify({
+    name: '删除验收历史药品', specification: 'AR 1 瓶', inboundAt: new Date().toISOString(), cabinet: 'B', shelf: 1,
+  }) }), 201)).chemical;
+  const historyPurchase = await createPurchase(candidateSession.cookie, '删除验收历史采购', 'normal');
+  const historyInbound = await createInboundRequest(candidateSession.cookie, bob.user.id, '删除验收历史代入库');
+  const historyCounts = {
+    chemicals: (system.db.prepare('SELECT COUNT(*) count FROM chemicals').get() as { count: number }).count,
+    movements: (system.db.prepare('SELECT COUNT(*) count FROM inventory_movements').get() as { count: number }).count,
+    purchases: (system.db.prepare('SELECT COUNT(*) count FROM purchases').get() as { count: number }).count,
+    inbound: (system.db.prepare('SELECT COUNT(*) count FROM inbound_requests').get() as { count: number }).count,
+    invites: (system.db.prepare('SELECT COUNT(*) count FROM registration_invites').get() as { count: number }).count,
+  };
+  const originalCandidate = system.db.prepare('SELECT * FROM users WHERE id=?').get(deletionCandidate.id) as Record<string, unknown>;
+  assert((system.db.prepare('SELECT COUNT(*) count FROM sessions WHERE user_id=?').get(deletionCandidate.id) as { count: number }).count > 0);
+  assert((system.db.prepare('SELECT COUNT(*) count FROM notifications WHERE user_id=?').get(deletionCandidate.id) as { count: number }).count > 0);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM notification_preferences WHERE user_id=?').get(deletionCandidate.id) as { count: number }).count, 1);
+
+  const candidateSocket = await connect(candidateSession.cookie);
+  const changedEvent = event(aliceSocket, 'user:changed'); const disconnectEvent = event(candidateSocket, 'disconnect');
+  const deleted = await json(await request(`/users/${deletionCandidate.id}`, teacher.cookie, { method: 'DELETE' }));
+  assert.deepEqual(deleted, { deleted: { id: deletionCandidate.id, mode: 'anonymized' } });
+  assert.deepEqual(await changedEvent, deleted.deleted); assert.equal(await disconnectEvent, 'io server disconnect');
+  const tombstone = system.db.prepare('SELECT * FROM users WHERE id=?').get(deletionCandidate.id) as Record<string, unknown>;
+  assert.match(String(tombstone.username), new RegExp(`^deleted-${deletionCandidate.id}-[A-Za-z0-9_-]+$`));
+  assert.equal(tombstone.display_name, `已删除用户 #${deletionCandidate.id}`); assert.equal(tombstone.role, 'normal_admin');
+  assert.equal(tombstone.active, 0); assert.equal(tombstone.demo, 0); assert.equal(tombstone.version, Number(originalCandidate.version) + 1);
+  assert.equal(verifyPassword('AcceptanceDelete123!', String(tombstone.password_hash)), false); assert(!Number.isNaN(Date.parse(String(tombstone.deleted_at))));
+  for (const table of ['sessions', 'notifications', 'notification_preferences']) {
+    assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE user_id=?`).get(deletionCandidate.id) as { count: number }).count, 0);
+  }
+  assert.deepEqual(system.db.prepare('PRAGMA foreign_key_check').all(), []);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM chemicals').get() as { count: number }).count, historyCounts.chemicals);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM inventory_movements').get() as { count: number }).count, historyCounts.movements);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM purchases').get() as { count: number }).count, historyCounts.purchases);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM inbound_requests').get() as { count: number }).count, historyCounts.inbound);
+  assert.equal((system.db.prepare('SELECT COUNT(*) count FROM registration_invites').get() as { count: number }).count, historyCounts.invites);
+  assert.equal((await request('/auth/me', candidateSession.cookie)).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-delete', password: 'AcceptanceDelete123!' }) })).status, 401);
+  assert.equal((await request(`/users/${deletionCandidate.id}`, teacher.cookie, { method: 'PATCH', body: JSON.stringify({ displayName: '不能恢复', version: tombstone.version }) })).status, 404);
+  assert.equal((await request(`/users/${deletionCandidate.id}`, teacher.cookie, { method: 'DELETE' })).status, 404);
+  assert(!(await json(await request('/users', teacher.cookie))).users.some((user: any) => user.id === deletionCandidate.id));
+  assert(!(await json(await request('/members', teacher.cookie))).users.some((user: any) => user.id === deletionCandidate.id));
+
+  const deletionAudit = system.db.prepare(`SELECT * FROM audit_logs WHERE action='account_deleted' AND object_id=?`).get(String(deletionCandidate.id)) as Record<string, unknown>;
+  assert.deepEqual(JSON.parse(String(deletionAudit.details_json)), { mode: 'anonymized' });
+  const deletionAuditText = JSON.stringify(deletionAudit);
+  for (const oldPii of [String(originalCandidate.username), String(originalCandidate.display_name), String(originalCandidate.password_hash), 'AcceptanceDelete123!']) assert(!deletionAuditText.includes(oldPii));
+
+  const reused = await register({ username: 'acceptance-delete', displayName: '验收重用账号', password: 'AcceptanceReused123!', passwordConfirm: 'AcceptanceReused123!', inviteCode: candidateInvite.code });
+  assert.equal(reused.response.status, 201); assert.notEqual(reused.user.id, deletionCandidate.id); assert.equal(reused.user.role, 'member');
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-delete', password: 'AcceptanceDelete123!' }) })).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-delete', password: 'AcceptanceReused123!' }) })).status, 200);
+  const anonymous = { id: deletionCandidate.id, username: String(tombstone.username), displayName: `已删除用户 #${deletionCandidate.id}` };
+  assert.deepEqual((await json(await request(`/chemicals/${historyChemical.id}`, teacher.cookie))).chemical.owner, anonymous);
+  assert.deepEqual((await json(await request('/purchases', teacher.cookie))).purchases.find((item: any) => item.id === historyPurchase.id).applicant, anonymous);
+  assert.deepEqual((await json(await request('/inbound-requests?scope=incoming', bob.cookie))).requests.find((item: any) => item.id === historyInbound.id).requester, anonymous);
+  const historicalInvite = (await json(await request('/registration-invites', teacher.cookie))).invites.find((item: any) => item.id === candidateInvite.id);
+  assert.deepEqual(historicalInvite.creator, anonymous); assert.equal(historicalInvite.usedBy.id, reused.user.id);
+
+  const race = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
+    username: 'acceptance-delete-race', displayName: '验收并发删除', role: 'member', password: 'AcceptanceRace123!',
+  }) }), 201)).user;
+  const raceStatuses = (await Promise.all([
+    request(`/users/${race.id}`, teacher.cookie, { method: 'DELETE' }), request(`/users/${race.id}`, teacher.cookie, { method: 'DELETE' }),
+  ])).map(({ status }) => status).sort((left, right) => left - right);
+  assert.deepEqual(raceStatuses, [200, 404]);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='account_deleted' AND object_id=?`).get(String(race.id)) as { count: number }).count, 1);
+
+  const hazardRow = system.db.prepare('SELECT id,demo FROM users WHERE id=?').get(hazard.user.id) as { id: number; demo: number };
+  assert.equal(hazardRow.demo, 1); assert.equal((await request(`/users/${hazard.user.id}`, teacher.cookie, { method: 'DELETE' })).status, 200);
+  assert.equal((system.db.prepare('SELECT demo FROM users WHERE id=?').get(hazard.user.id) as { demo: number }).demo, 0);
+  assert.equal((await request('/auth/me', hazard.cookie)).status, 401); assert.deepEqual(system.db.prepare('PRAGMA foreign_key_check').all(), []);
+  console.log('PASS account deletion: guards, cleanup, random tombstone, safe realtime/disconnect, username reuse, history/FK retention, demo/non-demo, concurrent idempotence');
+
+  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4); assert(logs.some((log: any) => log.action === 'account_deleted'));
   console.log(`ACCEPTANCE OK (${logs.length} audit entries verified)`);
 } finally {
   for (const socket of sockets) socket.close(); await system.close();

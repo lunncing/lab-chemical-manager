@@ -18,7 +18,7 @@ export function mapAudit(row: Record<string, unknown>) {
 interface NotifyInput { userIds: number[]; category: NotificationCategory; title: string; body: string; objectType?: string; objectId?: string | number; }
 
 export function eligibleUserIds(db: Db, category: NotificationCategory, clause = '1=1', params: Array<string | number> = []): number[] {
-  const rows = db.prepare(`SELECT u.id FROM users u WHERE u.active=1 AND (${clause}) AND NOT EXISTS (
+  const rows = db.prepare(`SELECT u.id FROM users u WHERE u.active=1 AND u.deleted_at IS NULL AND (${clause}) AND NOT EXISTS (
     SELECT 1 FROM notification_preferences p WHERE p.user_id=u.id AND p.category=? AND p.enabled=0
   )`).all(...params, category) as Array<{ id: number }>;
   return rows.map((row) => Number(row.id));

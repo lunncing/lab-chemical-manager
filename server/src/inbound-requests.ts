@@ -54,7 +54,7 @@ export function inboundRequestsRouter(db: Db, io: SocketServer): Router {
   router.post('/', asyncRoute((request, res) => {
     const req = request as AuthedRequest; const input = parseBody(inboundRequestCreateSchema, req.body); const now = new Date().toISOString();
     if (input.targetUserId === req.user.id) throw new HttpError(400, '代入库对象不能是自己', 'VALIDATION_ERROR');
-    const target = db.prepare('SELECT * FROM users WHERE id=? AND active=1').get(input.targetUserId) as Record<string, unknown> | undefined;
+    const target = db.prepare('SELECT * FROM users WHERE id=? AND active=1 AND deleted_at IS NULL').get(input.targetUserId) as Record<string, unknown> | undefined;
     if (!target) throw new HttpError(400, '代入库对象不存在或已停用', 'VALIDATION_ERROR');
     const committed = transaction(db, () => {
       const result = db.prepare(`INSERT INTO inbound_requests
