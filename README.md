@@ -2,11 +2,11 @@
 
 面向实验室局域网的药品库存、代入库、采购审批、采购执行、消息与审计系统。一个 Node.js 进程同时提供 Express API、Socket.IO 实时更新和 React 用户端，数据保存在本机 SQLite。
 
-当前版本：**V1.4.0**
+当前版本：**V1.5.0**
 
 ## 主要功能
 
-- A 常温柜、B 冷藏柜，各 5 层；药品入库、调动、废弃、搜索与历史追溯。
+- A 常温柜、B 冷藏柜各 5 层，C 酸柜单层且明确标注“仅酸性物质”；支持入库、调动、废弃、搜索与历史追溯。
 - 普通入库固定当前账号；代入库需要目标人员同意，支持拒绝和发起人撤销。
 - 普通成员、审批与普通采购人、危险品采购人、超级管理员四类权限。
 - 普通/加急采购申请、待审批、待采购、已采购和角色化任务数量。
@@ -54,7 +54,7 @@ http://<服务器IPv4地址>:3000
 从 GitHub Releases 下载：
 
 ```text
-lab-chemical-manager-v1.4.0-windows-deploy.zip
+lab-chemical-manager-v1.5.0-windows-deploy.zip
 ```
 
 解压后在 PowerShell 中执行：
@@ -203,7 +203,7 @@ npm run build
 npm run acceptance
 ```
 
-V1.4.0 当前验证结果：75/75 自动测试、TypeScript 检查、生产构建、完整 acceptance 和 DSH 独立审查均通过。
+V1.5.0 当前验证结果：84/84 自动测试、TypeScript 检查、生产构建、完整 acceptance 和 DSH 独立审查均通过。
 
 ## 目录
 
