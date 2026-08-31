@@ -3,8 +3,9 @@ import type { PurchaseType, Role } from '../../shared/types.js';
 import { cabinets } from '../../shared/cabinets.js';
 import type { Chemical } from './types.js';
 
-export function canApprove(role: Role, type: PurchaseType): boolean {
-  return role === 'super_admin' || (role === 'normal_admin' && type === 'normal');
+export function canApprove(role: Role, type: PurchaseType, hazardous = false): boolean {
+  if (type === 'urgent') return role === 'super_admin';
+  return role === 'super_admin' || (hazardous ? role === 'hazardous_buyer' : role === 'normal_admin');
 }
 export function canAdministerAccounts(role: Role): boolean { return role === 'super_admin'; }
 

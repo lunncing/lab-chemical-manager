@@ -20,7 +20,7 @@ async function decide(cookie: string, purchase: { id: number; version: number },
 
 describe('approval-time weekly archive membership', () => {
   it('archives only approved normal nonhazardous requests using their successful decision time', async () => {
-    const member = await login(ctx.base, 'member-a'); const admin = await login(ctx.base, 'admin'); const teacher = await login(ctx.base, 'teacher');
+    const member = await login(ctx.base, 'member-a'); const admin = await login(ctx.base, 'admin'); const teacher = await login(ctx.base, 'teacher'); const hazard = await login(ctx.base, 'hazard');
     const normal = await create(member, '普通非危险品');
     const hazardous = await create(member, '普通危险品', 'normal', true);
     const urgent = await create(member, '加急非危险品', 'urgent');
@@ -34,7 +34,7 @@ describe('approval-time weekly archive membership', () => {
       { purchase_id: normal.id, week_start: beijingWeekStart(approved.decidedAt), added_at: approved.decidedAt },
     ]);
 
-    expect((await decide(admin, hazardous, 'approved')).status).toBe(200);
+    expect((await decide(hazard, hazardous, 'approved')).status).toBe(200);
     expect((await decide(teacher, urgent, 'approved')).status).toBe(200);
     expect((await decide(admin, deferred, 'deferred', '等待预算')).status).toBe(200);
     expect((await decide(admin, rejected, 'rejected', '不予采购')).status).toBe(200);

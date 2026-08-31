@@ -16,10 +16,12 @@ describe('catalog and notification routing', () => {
     async function approve(purchase: any, cookie: string) {
       const response = await api(ctx.base, cookie, `/api/purchases/${purchase.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: purchase.version }) });
       expect(response.status).toBe(200);
+      return (await response.json()).purchase;
     }
     const normal = await submit('normal', false); const urgent = await submit('urgent', false);
     const dangerous = await submit('normal', true); const dangerousUrgent = await submit('urgent', true);
-    await approve(normal, admin); await approve(urgent, teacher); await approve(dangerous, admin); await approve(dangerousUrgent, teacher);
+    await approve(normal, admin); await approve(urgent, teacher); await approve(dangerous, hazard);
+    await approve(await approve(dangerousUrgent, teacher), hazard);
     const normalIds = (await (await api(ctx.base, admin, '/api/purchases/catalog/normal')).json()).purchases.map((p: any) => p.id);
     const urgentIds = (await (await api(ctx.base, admin, '/api/purchases/catalog/urgent')).json()).purchases.map((p: any) => p.id);
     const hazardousIds = (await (await api(ctx.base, hazard, '/api/purchases/catalog/hazardous')).json()).purchases.map((p: any) => p.id);

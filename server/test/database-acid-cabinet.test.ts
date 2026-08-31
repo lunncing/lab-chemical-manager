@@ -62,7 +62,8 @@ function createV14(path: string, brokenForeignKey = false): DatabaseSync {
 }
 
 function snapshot(db: DatabaseSync) {
-  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name<>'registration_invites' ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
+  const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
+    AND name NOT IN ('registration_invites','password_reset_requests') ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
   return Object.fromEntries(tables.map((table) => {
     const columns = table === 'users' ? 'id,username,display_name,role,password_hash,active,demo,version,created_at,updated_at' : '*';
     const rows = db.prepare(`SELECT ${columns} FROM "${table}" ORDER BY rowid`).all();

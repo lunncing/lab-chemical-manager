@@ -14,6 +14,7 @@ const categoryLabels: Record<NotificationCategory, string> = {
   hazardous: '危险品',
   account: '账号',
   proxy_inbound: '代入库',
+  password_reset: '密码修改',
 };
 
 export const notificationCategoryOptions = [

@@ -38,7 +38,7 @@ describe('purchase task UI', () => {
 
   it('omits the operation column for all/catalog and renders only mode-specific actions elsewhere', () => {
     const render = (mode: Parameters<typeof PurchaseTable>[0]['mode'], item: Purchase = purchase) => renderToStaticMarkup(
-      <PurchaseTable purchases={[item]} mode={mode} currentUserId={4} empty="空" onAction={() => undefined} />,
+      <PurchaseTable purchases={[item]} mode={mode} role="super_admin" currentUserId={4} empty="空" onAction={() => undefined} />,
     );
 
     for (const mode of ['all', 'catalog_normal', 'catalog_urgent', 'catalog_hazardous'] as const) {
@@ -67,14 +67,14 @@ describe('purchase task UI', () => {
 
     for (const mode of ['all', 'mine', 'approvals', 'procurement', 'catalog_normal', 'catalog_urgent', 'catalog_hazardous'] as const) {
       const item = mode === 'procurement' ? { ...purchase, status: 'approved' as const } : purchase;
-      const html = renderToStaticMarkup(<PurchaseTable purchases={[item]} mode={mode} currentUserId={4} empty="空" onAction={() => undefined} />);
+      const html = renderToStaticMarkup(<PurchaseTable purchases={[item]} mode={mode} role="super_admin" currentUserId={4} empty="空" onAction={() => undefined} />);
       expect(html).toContain('提交日期');
       expect(html).toContain(expected);
       expect(html.indexOf('申请人')).toBeLessThan(html.indexOf('提交日期'));
       expect(html.indexOf('提交日期')).toBeLessThan(html.indexOf('类型'));
     }
 
-    const invalid = renderToStaticMarkup(<PurchaseTable purchases={[{ ...purchase, createdAt: 'invalid' }]} mode="all" currentUserId={4} empty="空" onAction={() => undefined} />);
+    const invalid = renderToStaticMarkup(<PurchaseTable purchases={[{ ...purchase, createdAt: 'invalid' }]} mode="all" role="super_admin" currentUserId={4} empty="空" onAction={() => undefined} />);
     expect(invalid).toContain('<td>—</td>');
   });
 

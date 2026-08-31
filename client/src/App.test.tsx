@@ -60,6 +60,8 @@ describe('front-end critical behavior', () => {
   it('maps role affordances to the same approval model used by the server', () => {
     expect(canApprove('normal_admin', 'normal')).toBe(true);
     expect(canApprove('normal_admin', 'urgent')).toBe(false);
+    expect(canApprove('normal_admin', 'normal', true)).toBe(false);
+    expect(canApprove('hazardous_buyer', 'normal', true)).toBe(true);
     expect(canApprove('super_admin', 'urgent')).toBe(true);
     expect(canAdministerAccounts('member')).toBe(false);
     expect(canAdministerAccounts('super_admin')).toBe(true);
@@ -81,10 +83,11 @@ describe('role-filtered primary navigation', () => {
     expect(navigation('hazardous_buyer')).not.toContain('邀请码管理');
   });
 
-  it('shows only procurement to hazardous buyers and both counted tasks to administrators', () => {
+  it('shows both counted tasks to hazardous buyers and administrators without granting hazardous invite management', () => {
     const hazardous = navigation('hazardous_buyer');
-    expect(hazardous).not.toContain('待审批');
+    expect(hazardous).toContain('待审批（3）');
     expect(hazardous).toContain('待采购（2）');
+    expect(hazardous).not.toContain('邀请码管理');
 
     for (const role of ['normal_admin', 'super_admin'] as const) {
       const html = navigation(role);
@@ -102,7 +105,7 @@ describe('role-filtered primary navigation', () => {
     expect(taskSummaryPath).toBe('/purchases/tasks/summary');
     expect(revisionEvents).toContain('purchase:changed');
     expect(safeViewForRole('approvals', 'member')).toBe('inventory');
-    expect(safeViewForRole('approvals', 'hazardous_buyer')).toBe('inventory');
+    expect(safeViewForRole('approvals', 'hazardous_buyer')).toBe('approvals');
     expect(safeViewForRole('procurement', 'member')).toBe('inventory');
     expect(safeViewForRole('procurement', 'hazardous_buyer')).toBe('procurement');
     expect(safeViewForRole('accounts', 'normal_admin')).toBe('inventory');

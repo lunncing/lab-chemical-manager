@@ -36,7 +36,7 @@ describe('role-specific purchase task queues', () => {
     const urgentDeferred = await decide(teacher, await create(bob, '加急已推迟', 'urgent'), 'deferred');
     const normalApproved = await decide(admin, await create(alice, '普通待采购'), 'approved');
     const urgentApproved = await decide(teacher, await create(alice, '加急待采购', 'urgent'), 'approved');
-    const hazardousApproved = await decide(admin, await create(alice, '危险品待采购', 'normal', true), 'approved');
+    const hazardousApproved = await decide(hazard, await create(alice, '危险品待采购', 'normal', true), 'approved');
 
     expect(await taskIds(admin, 'approvals')).toEqual([normalPending.id, normalDeferred.id].sort((a, b) => a - b));
     expect(await taskIds(teacher, 'approvals')).toEqual([normalPending.id, urgentPending.id, normalDeferred.id, urgentDeferred.id].sort((a, b) => a - b));
@@ -56,7 +56,7 @@ describe('role-specific purchase task queues', () => {
       expect(await response.json()).toEqual(summary);
     }
 
-    expect((await api(ctx.base, hazard, '/api/purchases/tasks/approvals')).status).toBe(403);
+    expect(await taskIds(hazard, 'approvals')).toEqual([]);
     expect((await api(ctx.base, alice, '/api/purchases/tasks/approvals')).status).toBe(403);
     expect((await api(ctx.base, alice, '/api/purchases/tasks/procurement')).status).toBe(403);
   });
@@ -66,8 +66,9 @@ describe('role-specific purchase task queues', () => {
     const teacher = await login(ctx.base, 'teacher'); const hazard = await login(ctx.base, 'hazard');
     const normal = await decide(admin, await create(alice, '筛选普通'), 'approved');
     const urgent = await decide(teacher, await create(alice, '筛选加急', 'urgent'), 'approved');
-    const hazardousNormal = await decide(admin, await create(alice, '筛选危险普通', 'normal', true), 'approved');
-    const hazardousUrgent = await decide(teacher, await create(alice, '筛选危险加急', 'urgent', true), 'approved');
+    const hazardousNormal = await decide(hazard, await create(alice, '筛选危险普通', 'normal', true), 'approved');
+    const hazardousUrgentFirstStage = await decide(teacher, await create(alice, '筛选危险加急', 'urgent', true), 'approved');
+    const hazardousUrgent = await decide(hazard, hazardousUrgentFirstStage, 'approved');
 
     async function filtered(cookie: string, requestType: 'normal' | 'urgent') {
       const response = await api(ctx.base, cookie, `/api/purchases/tasks/procurement?requestType=${requestType}`);

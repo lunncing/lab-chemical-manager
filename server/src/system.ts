@@ -1,6 +1,6 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { createServer, type Server as HttpServer } from 'node:http';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
 import { existsSync } from 'node:fs';
 import { Server as SocketServer } from 'socket.io';
 import { openDatabase, transaction, type Db, userView } from './database.js';
@@ -15,9 +15,10 @@ import { inboundRequestsRouter } from './inbound-requests.js';
 import { eligibleUserIds, emitCommitted, insertAudit, insertNotifications } from './domain.js';
 import { digestInviteCode, registrationInvitesRouter, registrationInviteView } from './registration-invites.js';
 import { deleteAccount } from './account-deletion.js';
+import { passwordRecoveryPublicRouter, passwordResetRequestsRouter } from './password-recovery.js';
 
 export interface RunningSystem { app: express.Express; httpServer: HttpServer; io: SocketServer; db: Db; close(): Promise<void>; }
-export interface SystemOptions { databasePath: string; seedDemo?: boolean; cookieSecure?: boolean; sessionDays?: number; }
+export interface SystemOptions { databasePath: string; seedDemo?: boolean; cookieSecure?: boolean; sessionDays?: number; clientDistPath?: string; }
 
 function cookieValue(header: string | undefined, name: string): string | undefined {
   return header?.split(';').map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
@@ -36,8 +37,10 @@ export function createSystem(options: SystemOptions): RunningSystem {
   const app = express();
   const httpServer = createServer(app);
   const io = new SocketServer(httpServer, { path: '/socket.io' });
+  io.engine.on('headers', (headers) => { headers['cache-control'] = 'no-store'; });
   app.disable('x-powered-by');
   app.use(express.json({ limit: '64kb' }));
+  app.use('/api', (_req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
 
   const getUserFromCookie = (header: string | undefined) => {
     const token = cookieValue(header, 'lab_session');
@@ -111,6 +114,7 @@ export function createSystem(options: SystemOptions): RunningSystem {
     res.status(204).end();
   });
   app.get('/api/auth/me', authenticate, (req, res) => res.json({ user: (req as AuthedRequest).user }));
+  app.use('/api/password-recovery', passwordRecoveryPublicRouter(db, io, Boolean(options.cookieSecure)));
 
   app.use('/api', authenticate);
   app.use('/api/chemicals', inventoryRouter(db, io));
@@ -119,6 +123,7 @@ export function createSystem(options: SystemOptions): RunningSystem {
   app.use('/api/notifications', notificationsRouter(db, io));
   app.use('/api/purchases', purchasesRouter(db, io));
   app.use('/api/registration-invites', registrationInvitesRouter(db, io));
+  app.use('/api/password-reset-requests', passwordResetRequestsRouter(db, io));
   app.get('/api/members', (_req, res) => {
     const rows = db.prepare('SELECT * FROM users WHERE active=1 AND deleted_at IS NULL ORDER BY display_name, id').all() as Array<Record<string, unknown>>;
     res.json({ users: rows.map(userView) });
@@ -172,10 +177,18 @@ export function createSystem(options: SystemOptions): RunningSystem {
     res.json({ deleted: committed.deleted });
   }));
 
-  const clientDist = resolve(process.cwd(), 'client/dist');
+  const clientDist = resolve(options.clientDistPath ?? resolve(process.cwd(), 'client/dist'));
   if (existsSync(clientDist)) {
-    app.use(express.static(clientDist));
-    app.get('/{*path}', (req, res, next) => req.path.startsWith('/api/') || req.path.startsWith('/socket.io') ? next() : res.sendFile(resolve(clientDist, 'index.html')));
+    const indexPath = resolve(clientDist, 'index.html'); const assetsPrefix = `${resolve(clientDist, 'assets')}${sep}`;
+    app.use(express.static(clientDist, { setHeaders: (res, filePath) => {
+      if (filePath === indexPath) res.setHeader('Cache-Control', 'no-cache');
+      else if (filePath.startsWith(assetsPrefix)) res.setHeader('Cache-Control', 'public,max-age=31536000,immutable');
+    } }));
+    app.get('/{*path}', (req, res, next) => {
+      if (req.path === '/api' || req.path.startsWith('/api/') || req.path.startsWith('/socket.io')) return next();
+      res.setHeader('Cache-Control', 'no-cache');
+      return res.sendFile(indexPath);
+    });
   }
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
     const known = error instanceof HttpError;

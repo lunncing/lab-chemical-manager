@@ -33,6 +33,21 @@ CREATE TABLE IF NOT EXISTS registration_invites (
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS password_reset_requests (
+  id INTEGER PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  recovery_token_hash TEXT NOT NULL UNIQUE CHECK(length(recovery_token_hash)=64),
+  status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','appealed','consumed','expired')),
+  appeal_reason TEXT,
+  reviewer_id INTEGER REFERENCES users(id),
+  review_comment TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  reviewed_at TEXT,
+  consumed_at TEXT
+);
 CREATE TABLE IF NOT EXISTS chemicals (
   id INTEGER PRIMARY KEY, name TEXT NOT NULL, specification TEXT NOT NULL,
   owner_id INTEGER NOT NULL REFERENCES users(id), inbound_operator_id INTEGER NOT NULL REFERENCES users(id),
@@ -84,12 +99,18 @@ CREATE TABLE IF NOT EXISTS inbound_requests (
 CREATE INDEX IF NOT EXISTS idx_chemicals_location ON chemicals(status, cabinet, shelf);
 CREATE INDEX IF NOT EXISTS idx_purchases_status ON purchases(status, request_type, hazardous);
 CREATE INDEX IF NOT EXISTS idx_purchase_weekly_entries_week_start ON purchase_weekly_entries(week_start);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at);
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, read_at, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_target_status ON inbound_requests(target_user_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_inbound_requests_requester_status ON inbound_requests(requester_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_registration_invites_created_by ON registration_invites(created_by);
 CREATE INDEX IF NOT EXISTS idx_registration_invites_expires_at ON registration_invites(expires_at);
 CREATE INDEX IF NOT EXISTS idx_registration_invites_used_by ON registration_invites(used_by);
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_user_status ON password_reset_requests(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_status_created ON password_reset_requests(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_password_reset_requests_expires ON password_reset_requests(expires_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_password_reset_requests_unresolved_user ON password_reset_requests(user_id)
+  WHERE status IN ('pending','approved','rejected','appealed');
 PRAGMA optimize;
 `;
 
@@ -97,6 +118,7 @@ export function openDatabase(path: string, seedDemo = true): Db {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path);
   try {
+    if (path !== ':memory:') db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
     db.exec(schema);
     migrateDeletedAt(db);
     migrateAcidCabinetTables(db);

@@ -23,6 +23,12 @@ export interface PurchaseWeekInfo { weekStart: string; weekEnd: string; isCurren
 export interface PurchaseWeekSummary extends PurchaseWeekInfo { count: number; approvedCount: number; purchasedCount: number; }
 export interface AuditLog { id: number; actor: Person; action: string; objectType: string; objectId: string; summary: string; details: unknown; createdAt: string; }
 export interface NotificationItem { id: number; userId: number; category: string; title: string; body: string; objectType: string | null; objectId: string | null; readAt: string | null; createdAt: string; }
+export type PasswordResetRequestStatus = 'pending' | 'approved' | 'rejected' | 'appealed' | 'consumed' | 'expired';
+export interface PasswordResetRequest {
+  id: number; user: Person; status: PasswordResetRequestStatus; appealReason: string | null; reviewer: Person | null;
+  reviewComment: string | null; version: number; createdAt: string; updatedAt: string; expiresAt: string;
+  reviewedAt: string | null; consumedAt: string | null;
+}
 export interface InboundRequest {
   id: number; requester: Person; targetUser: Person; name: string; specification: string; inboundAt: string;
   cabinet: Cabinet; shelf: number; status: InboundRequestStatus; decisionComment: string | null; chemicalId: number | null;

@@ -11,6 +11,29 @@ function validateLocation(value: { cabinet: unknown; shelf: unknown }, ctx: { ad
 }
 
 export const loginSchema = z.object({ username: z.string().trim().min(1).max(80), password: z.string().min(1).max(200) }).strict();
+export const passwordRecoveryLookupSchema = z.object({
+  displayName: z.string().trim().min(1, '姓名不能为空').max(100, '姓名不能超过 100 个字符'),
+}).strict();
+export const passwordChangeWithCurrentSchema = z.object({
+  displayName: z.string().trim().min(1, '姓名不能为空').max(100, '姓名不能超过 100 个字符'),
+  currentPassword: z.string().min(1, '请输入原密码').max(200, '原密码不能超过 200 个字符'),
+  newPassword: z.string().min(10, '密码至少需要 10 个字符').max(200, '密码不能超过 200 个字符'),
+  newPasswordConfirm: z.string().min(1, '请确认新密码').max(200, '确认密码不能超过 200 个字符'),
+}).strict().refine((value) => value.newPassword === value.newPasswordConfirm, { message: '两次输入的新密码不一致', path: ['newPasswordConfirm'] });
+export const passwordResetDecisionSchema = z.object({
+  decision: z.enum(['approved', 'rejected']),
+  comment: z.string().trim().max(1000, '审批说明不能超过 1000 个字符').optional(),
+  version: z.number().int().positive(),
+}).strict().superRefine((value, ctx) => {
+  if (value.decision === 'rejected' && !value.comment) ctx.addIssue({ code: 'custom', message: '拒绝必须填写说明', path: ['comment'] });
+});
+export const passwordRecoveryAppealSchema = z.object({
+  reason: z.string().trim().min(1, '申诉理由不能为空').max(1000, '申诉理由不能超过 1000 个字符'),
+}).strict();
+export const passwordResetApprovedSchema = z.object({
+  newPassword: z.string().min(10, '密码至少需要 10 个字符').max(200, '密码不能超过 200 个字符'),
+  newPasswordConfirm: z.string().min(1, '请确认新密码').max(200, '确认密码不能超过 200 个字符'),
+}).strict().refine((value) => value.newPassword === value.newPasswordConfirm, { message: '两次输入的新密码不一致', path: ['newPasswordConfirm'] });
 export const registrationSchema = z.object({
   username: z.string().min(3, '用户名至少需要 3 个字符').max(80, '用户名不能超过 80 个字符').regex(/^[a-zA-Z0-9._-]+$/, '用户名只能包含字母、数字、点、下划线和连字符'),
   displayName: z.string().trim().min(1, '姓名不能为空').max(100, '姓名不能超过 100 个字符'),

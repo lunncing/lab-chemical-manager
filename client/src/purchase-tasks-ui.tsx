@@ -10,6 +10,30 @@ export function canMarkPurchased(role: Role, hazardous: boolean): boolean {
   return role === 'super_admin' || (hazardous ? role === 'hazardous_buyer' : role === 'normal_admin');
 }
 
+type ApprovalStage = 'normal' | 'super' | 'hazardous';
+
+function purchaseApprovalStage(purchase: Purchase): ApprovalStage | null {
+  if (purchase.status === 'pending_super') return 'super';
+  if (purchase.status === 'pending_hazardous' || purchase.status === 'deferred_hazardous') return 'hazardous';
+  if (purchase.status === 'pending_normal') return purchase.hazardous ? 'hazardous' : 'normal';
+  if (purchase.status !== 'deferred') return null;
+  if (purchase.requestType === 'urgent') return 'super';
+  return purchase.hazardous ? 'hazardous' : 'normal';
+}
+
+export function canReviewPurchase(role: Role, purchase: Purchase): boolean {
+  const stage = purchaseApprovalStage(purchase);
+  return stage !== null && (role === 'super_admin' || (stage === 'normal' && role === 'normal_admin') || (stage === 'hazardous' && role === 'hazardous_buyer'));
+}
+
+export function purchaseApprovalStageLabel(purchase: Purchase): string {
+  const stage = purchaseApprovalStage(purchase);
+  if (stage === 'super') return '老师加急审批';
+  if (stage === 'hazardous') return '危险品复核';
+  if (stage === 'normal') return '普通采购审批';
+  return '';
+}
+
 export type PurchaseAction = 'edit' | 'withdraw' | 'approved' | 'deferred' | 'rejected' | 'purchased';
 
 const tableCapabilities: Record<PurchaseViewMode, PurchaseAction[]> = {
@@ -35,28 +59,28 @@ export function formatPurchaseCreatedAt(value: string | null | undefined): strin
   return new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(date);
 }
 
-function visibleActions(purchase: Purchase, mode: PurchaseViewMode, currentUserId: number) {
+function visibleActions(purchase: Purchase, mode: PurchaseViewMode, role: Role, currentUserId: number) {
   const capabilities = purchaseTableCapabilities(mode);
   if (mode === 'mine') {
-    return purchase.applicant.id === currentUserId && ['pending_normal', 'pending_super', 'deferred'].includes(purchase.status) ? capabilities : [];
+    return purchase.applicant.id === currentUserId && ['pending_normal', 'pending_super', 'pending_hazardous', 'deferred', 'deferred_hazardous'].includes(purchase.status) ? capabilities : [];
   }
-  if (mode === 'approvals') return ['pending_normal', 'pending_super', 'deferred'].includes(purchase.status) ? capabilities : [];
+  if (mode === 'approvals') return canReviewPurchase(role, purchase) ? capabilities : [];
   if (mode === 'procurement') return purchase.status === 'approved' ? capabilities : [];
   return [];
 }
 
-export function PurchaseTable({ purchases, mode, currentUserId, empty, onAction }: {
-  purchases: Purchase[]; mode: PurchaseViewMode; currentUserId: number; empty: string;
+export function PurchaseTable({ purchases, mode, role, currentUserId, empty, onAction }: {
+  purchases: Purchase[]; mode: PurchaseViewMode; role: Role; currentUserId: number; empty: string;
   onAction: (purchase: Purchase, action: PurchaseAction) => void;
 }) {
   if (!purchases.length) return <Empty>{empty}</Empty>;
   const hasActions = purchaseTableCapabilities(mode).length > 0;
   return <div className="table-wrap"><table><thead><tr><th>药品</th><th>申请人</th><th>提交日期</th><th>类型</th><th>状态</th><th>用途 / 意见</th>{hasActions && <th>操作</th>}</tr></thead><tbody>{purchases.map((purchase) => <tr key={purchase.id}>
     <td><strong>{purchase.chemicalName}</strong><small>{purchase.specification}</small>{purchase.hazardous && <span className="badge danger-badge">危险品</span>}</td>
-    <td>{purchase.applicant.displayName}</td><td>{formatPurchaseCreatedAt(purchase.createdAt)}</td><td>{purchase.requestType === 'urgent' ? '加急' : '普通'}</td>
+    <td>{purchase.applicant.displayName}</td><td>{formatPurchaseCreatedAt(purchase.createdAt)}</td><td>{purchase.requestType === 'urgent' ? '加急' : '普通'}{mode === 'approvals' && <small className={`approval-stage stage-${purchaseApprovalStage(purchase)}`}>{purchaseApprovalStageLabel(purchase)}</small>}</td>
     <td><span className={`badge status-${purchase.status}`}>{purchaseStatusLabel(purchase.status)}</span></td>
     <td>{purchase.purpose}{purchase.approvalComment && <small>审批：{purchase.approvalComment}</small>}</td>
-    {hasActions && <td><div className="row-actions">{visibleActions(purchase, mode, currentUserId).map((action) => <button type="button" className={action === 'approved' || action === 'purchased' ? 'approve' : action === 'rejected' ? 'danger-text' : undefined} key={action} onClick={() => onAction(purchase, action)}>{actionLabels[action]}</button>)}</div></td>}
+    {hasActions && <td><div className="row-actions">{visibleActions(purchase, mode, role, currentUserId).map((action) => <button type="button" className={action === 'approved' || action === 'purchased' ? 'approve' : action === 'rejected' ? 'danger-text' : undefined} key={action} onClick={() => onAction(purchase, action)}>{actionLabels[action]}</button>)}</div></td>}
   </tr>)}</tbody></table></div>;
 }
 

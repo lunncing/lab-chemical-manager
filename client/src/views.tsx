@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, ApiError } from './api.js';
 import { CabinetBoard, Empty, Modal, Status } from './components.js';
-import type { AuditLog, Chemical, InboundRequest, NotificationItem, Purchase, PurchaseWeekSummary, UserView } from './types.js';
+import type { AuditLog, Chemical, InboundRequest, NotificationItem, PasswordResetRequest, Purchase, PurchaseWeekSummary, UserView } from './types.js';
 import type { Cabinet } from '../../shared/types.js';
 import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseTabs, purchaseTaskDefinition, type ProcurementRequestType, type PurchaseRequestViewMode, type PurchaseTaskViewMode } from './purchase-view.js';
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
@@ -14,18 +14,40 @@ import { choosePurchaseWeek, purchaseWeekCatalogPath, PurchaseWeekPanel, shouldS
 import { ChemicalDiscardDialog, InboundRequestActionDialog, type InboundRequestDialogAction } from './inventory-action-dialogs.js';
 import { PurchaseActionDialog } from './purchase-action-dialog.js';
 import { AccountActionDialog, AccountRowActions, type AccountDialogAction } from './account-action-dialog.js';
+import { canReviewPasswordResetRequests, PasswordResetDecisionDialog, PasswordResetQueue, type PasswordResetDecision } from './password-reset-admin-ui.js';
+import { createLatestInventoryRequestGate, planInventoryRequests, scheduleInventorySearch } from './inventory-requests.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
 
 export function InventoryView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
-  const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState('');
+  const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState(''); const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
   const [discarding, setDiscarding] = useState<Chemical | null>(null); const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: InboundRequestDialogAction } | null>(null);
-  useEffect(() => { Promise.all([
-    api<{ chemicals: Chemical[] }>(`/chemicals${search ? `?search=${encodeURIComponent(search)}` : ''}`), api<{ users: UserView[] }>('/members'),
-    api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming'), api<{ requests: InboundRequest[] }>('/inbound-requests?scope=mine'),
-  ]).then(([stock, people, incomingRequests, myRequests]) => { setChemicals(stock.chemicals); setMembers(people.users); setIncoming(incomingRequests.requests); setMine(myRequests.requests); setError(''); }).catch((reason) => setError(messageOf(reason))); }, [revision, search]);
+  const chemicalRequests = useRef(createLatestInventoryRequestGate()); const supportingRequests = useRef(createLatestInventoryRequestGate());
+  useEffect(() => {
+    chemicalRequests.current.cancel();
+    return scheduleInventorySearch(() => setDebouncedSearch(search));
+  }, [search]);
+  useEffect(() => {
+    const request = chemicalRequests.current.begin(); const path = planInventoryRequests('search', debouncedSearch).chemicals;
+    api<{ chemicals: Chemical[] }>(path, { signal: request.signal })
+      .then((stock) => { if (request.isCurrent()) { setChemicals(stock.chemicals); setError(''); } })
+      .catch((reason) => { if (request.isCurrent()) setError(messageOf(reason)); });
+    return request.cancel;
+  }, [revision, debouncedSearch]);
+  useEffect(() => {
+    const request = supportingRequests.current.begin();
+    const [membersPath, incomingPath, minePath] = planInventoryRequests('revision', '').supporting;
+    Promise.all([
+      api<{ users: UserView[] }>(membersPath!, { signal: request.signal }),
+      api<{ requests: InboundRequest[] }>(incomingPath!, { signal: request.signal }),
+      api<{ requests: InboundRequest[] }>(minePath!, { signal: request.signal }),
+    ]).then(([people, incomingRequests, myRequests]) => {
+      if (request.isCurrent()) { setMembers(people.users); setIncoming(incomingRequests.requests); setMine(myRequests.requests); setError(''); }
+    }).catch((reason) => { if (request.isCurrent()) setError(messageOf(reason)); });
+    return request.cancel;
+  }, [revision]);
   function decide(request: InboundRequest, decision: 'approved' | 'rejected') { setProxyQueue(null); setInboundAction({ request, action: decision }); }
   function withdraw(request: InboundRequest) { setProxyQueue(null); setInboundAction({ request, action: 'withdraw' }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层，C 酸柜为单层。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
@@ -95,7 +117,7 @@ export function PurchasesView({ user, revision, onChanged }: { user: UserView; r
     <div className="tabs">{purchaseTabs(user.role, mode).map((tab) => <button key={tab.mode} aria-pressed={tab.pressed} onClick={() => setMode(tab.mode)}>{tab.label}</button>)}</div>
     {isPurchaseListMode(mode) && <div className="filters"><label>状态<select value={status} onChange={(e) => setStatus(e.target.value)}><option value="">全部</option>{purchaseStatusOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>类型<select value={kind} onChange={(e) => setKind(e.target.value)}><option value="">全部</option><option value="normal">普通</option><option value="urgent">加急</option></select></label><label>危险品<select value={hazardous} onChange={(e) => setHazardous(e.target.value)}><option value="">全部</option><option value="true">是</option><option value="false">否</option></select></label></div>}
     {shouldShowPurchaseWeekPanel(mode) && <PurchaseWeekPanel weeks={weeks} selectedWeekStart={selectedWeekStart} purchases={purchases} onChange={setSelectedWeekStart} />}
-    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={requestEmptyText[mode]} onAction={action} />
+    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} role={user.role} currentUserId={user.id} empty={requestEmptyText[mode]} onAction={action} />
     {showCreate && <PurchaseCreate onClose={() => setShowCreate(false)} onDone={() => { setShowCreate(false); onChanged(); }} />}
     {pendingAction && <PurchaseActionDialog purchase={pendingAction.purchase} action={pendingAction.action} onClose={() => setPendingAction(null)} onDone={() => { setPendingAction(null); onChanged(); }} />}
   </>;
@@ -109,7 +131,7 @@ export function PurchaseTaskView({ mode, user, revision, onChanged }: { mode: Pu
   function action(purchase: Purchase, actionName: PurchaseAction) { setPendingAction({ purchase, action: actionName }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 采购任务</p><h1>{definition.title}</h1><p>{mode === 'approvals' ? '处理需要您决定的采购申请。' : '确认已完成采购的药品。'}</p></div></header>
     <ProcurementTypeFilter mode={mode} value={requestType} onChange={setRequestType} />
-    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} currentUserId={user.id} empty={definition.empty} onAction={action} />
+    {error && <Status kind="error">{error}</Status>}<PurchaseTable purchases={purchases} mode={mode} role={user.role} currentUserId={user.id} empty={definition.empty} onAction={action} />
     {pendingAction && <PurchaseActionDialog purchase={pendingAction.purchase} action={pendingAction.action} onClose={() => setPendingAction(null)} onDone={() => { setPendingAction(null); onChanged(); }} />}
   </>;
 }
@@ -132,15 +154,29 @@ export function AuditEntries({ logs }: { logs: AuditLog[] }) {
 export function NotificationsView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: (unread?: number) => void }) {
   const [items, setItems] = useState<NotificationItem[]>([]); const [prefs, setPrefs] = useState<Array<{ category: string; enabled: boolean }>>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [category, setCategory] = useState<NotificationCategoryFilter>(''); const [readState, setReadState] = useState<NotificationReadFilter>('all'); const [error, setError] = useState('');
   const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: 'approved' | 'rejected' } | null>(null);
+  const [passwordResetRequests, setPasswordResetRequests] = useState<PasswordResetRequest[]>([]);
+  const [passwordResetAction, setPasswordResetAction] = useState<{ request: PasswordResetRequest; decision: PasswordResetDecision } | null>(null);
   const filteredItems = useMemo(() => filterNotifications(items, category, readState), [items, category, readState]);
-  const load = () => Promise.all([api<{ notifications: NotificationItem[]; unreadCount: number }>('/notifications'), api<{ preferences: Array<{ category: string; enabled: boolean }> }>('/notifications/preferences'), api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming')]).then(([messages, preferences, requests]) => { setItems(messages.notifications); setPrefs(preferences.preferences); setIncoming(requests.requests); onChanged(messages.unreadCount); }).catch((reason) => setError(messageOf(reason)));
+  const load = () => Promise.all([
+    api<{ notifications: NotificationItem[]; unreadCount: number }>('/notifications'),
+    api<{ preferences: Array<{ category: string; enabled: boolean }> }>('/notifications/preferences'),
+    api<{ requests: InboundRequest[] }>('/inbound-requests?scope=incoming'),
+    canReviewPasswordResetRequests(user.role)
+      ? api<{ requests: PasswordResetRequest[] }>('/password-reset-requests')
+      : Promise.resolve({ requests: [] as PasswordResetRequest[] }),
+  ]).then(([messages, preferences, requests, passwordResets]) => {
+    setItems(messages.notifications); setPrefs(preferences.preferences); setIncoming(requests.requests); setPasswordResetRequests(passwordResets.requests); setError(''); onChanged(messages.unreadCount);
+  }).catch((reason) => setError(messageOf(reason)));
   useEffect(() => { void load(); }, [revision]);
   function decide(request: InboundRequest, decision: 'approved' | 'rejected') { setInboundAction({ request, action: decision }); }
   return <><header className="page-header"><div><p className="eyebrow">MONITOR / 消息</p><h1>消息中心</h1><p>分类开关仅影响未来个人消息，不影响业务数据和公开日志。</p></div><button onClick={async () => { await api('/notifications/read-all', { method: 'POST' }); await load(); }}>全部已读</button></header>
-    {error && <Status kind="error">{error}</Status>}<section className="preference-panel"><h2>通知偏好</h2><div className="preference-grid">{prefs.map((pref) => <label className="switch" key={pref.category}><input type="checkbox" checked={pref.enabled} onChange={async (event) => { await api('/notifications/preferences', { method: 'PUT', body: JSON.stringify({ category: pref.category, enabled: event.target.checked }) }); await load(); }} /><span>{notificationCategoryName(pref.category)}</span></label>)}</div></section>
+    {error && <Status kind="error">{error}</Status>}
+    {canReviewPasswordResetRequests(user.role) && <PasswordResetQueue requests={passwordResetRequests} onDecision={(request, decision) => setPasswordResetAction({ request, decision })} />}
+    <section className="preference-panel"><h2>通知偏好</h2><div className="preference-grid">{prefs.map((pref) => <label className="switch" key={pref.category}><input type="checkbox" checked={pref.enabled} onChange={async (event) => { await api('/notifications/preferences', { method: 'PUT', body: JSON.stringify({ category: pref.category, enabled: event.target.checked }) }); await load(); }} /><span>{notificationCategoryName(pref.category)}</span></label>)}</div></section>
     <div className="filters"><label>通知类别<select value={category} onChange={(event) => setCategory(event.target.value as NotificationCategoryFilter)}>{notificationCategoryOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><label>阅读状态<select value={readState} onChange={(event) => setReadState(event.target.value as NotificationReadFilter)}>{notificationReadOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label><span>显示 {filteredItems.length} / 共 {items.length} 条</span></div>
     <div className="message-list">{filteredItems.map((item) => { const request = item.objectType === 'inbound_request' ? incoming.find((entry) => String(entry.id) === item.objectId) : undefined; return <article key={item.id} className={item.readAt ? 'read' : 'unread'}><button className="message-main" onClick={async () => { if (!item.readAt) { await api(`/notifications/${item.id}/read`, { method: 'PATCH' }); await load(); } }}><span className="message-dot" /><div><strong>{item.title}</strong><p>{item.body}</p><small>{notificationCategoryName(item.category)} · {formatTime(item.createdAt)}</small></div></button>{request && <InboundRequestActions request={request} currentUserId={user.id} onDecision={decide} onWithdraw={() => undefined} />}</article>; })}</div>{!items.length ? <Empty>暂无个人消息</Empty> : !filteredItems.length && <Empty>没有符合筛选条件的消息</Empty>}
     {inboundAction && <InboundRequestActionDialog request={inboundAction.request} action={inboundAction.action} onClose={() => setInboundAction(null)} onDone={() => { setInboundAction(null); void load().then(() => onChanged()); }} />}
+    {passwordResetAction && <PasswordResetDecisionDialog request={passwordResetAction.request} decision={passwordResetAction.decision} onClose={() => setPasswordResetAction(null)} onDone={() => { setPasswordResetAction(null); void load().then(() => onChanged()); }} />}
   </>;
 }
 

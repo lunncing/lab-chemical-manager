@@ -28,7 +28,7 @@ describe('account action dialogs', () => {
     const html = renderToStaticMarkup(<AccountActionDialog account={account} action="edit" onClose={() => undefined} onDone={() => undefined} />);
     expect(html).toContain('编辑账号'); expect(html).toContain('姓名');
     expect(html).toContain('普通成员'); expect(html).toContain('审批与普通采购人');
-    expect(html).toContain('超级管理员'); expect(html).toContain('危险品采购人');
+    expect(html).toContain('超级管理员'); expect(html).toContain('审批与危险采购人');
     expect(html).toContain('新密码（可选）'); expect(html).toContain('确认新密码');
     expect(html.match(/minLength="10"/g)).toHaveLength(2);
     expect(html).toContain('保存修改');

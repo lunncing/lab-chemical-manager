@@ -3,22 +3,24 @@ import { io, type Socket } from 'socket.io-client';
 import { api, ApiError } from './api.js';
 import { AccountsView, AuditView, InventoryView, NotificationsView, PurchasesView, PurchaseTaskView } from './views.js';
 import type { Role, UserView } from './types.js';
-import { revisionEvents } from './realtime-events.js';
+import { createRevisionScheduler, revisionEvents } from './realtime-events.js';
 import type { PurchaseTaskSummaryValue } from './purchase-tasks-ui.js';
 import { roleLabel } from './role-labels.js';
 import { InviteManagementView } from './invite-management.js';
+import { PasswordRecoveryFlow } from './password-recovery-ui.js';
 
 export type View = 'inventory' | 'purchases' | 'approvals' | 'procurement' | 'audit' | 'notifications' | 'accounts' | 'invites';
 export const taskSummaryPath = '/purchases/tasks/summary';
 
-const approvalRoles: Role[] = ['normal_admin', 'super_admin'];
+const approvalRoles: Role[] = ['normal_admin', 'hazardous_buyer', 'super_admin'];
 const procurementRoles: Role[] = ['normal_admin', 'hazardous_buyer', 'super_admin'];
+const inviteRoles: Role[] = ['normal_admin', 'super_admin'];
 
 export function safeViewForRole(view: View, role: Role): View {
   if (view === 'approvals' && !approvalRoles.includes(role)) return 'inventory';
   if (view === 'procurement' && !procurementRoles.includes(role)) return 'inventory';
   if (view === 'accounts' && role !== 'super_admin') return 'inventory';
-  if (view === 'invites' && !approvalRoles.includes(role)) return 'inventory';
+  if (view === 'invites' && !inviteRoles.includes(role)) return 'inventory';
   return view;
 }
 
@@ -28,7 +30,7 @@ export function PrimaryNavigation({ role, view, summary, unread, onView }: {
   const nav: Array<[View, string]> = [['inventory', '首页药品柜'], ['purchases', '采购申请']];
   if (approvalRoles.includes(role)) nav.push(['approvals', `待审批（${summary.approvalCount}）`]);
   if (procurementRoles.includes(role)) nav.push(['procurement', `待采购（${summary.procurementCount}）`]);
-  if (approvalRoles.includes(role)) nav.push(['invites', '邀请码管理']);
+  if (inviteRoles.includes(role)) nav.push(['invites', '邀请码管理']);
   nav.push(['audit', '改动日志'], ['notifications', `消息${unread ? ` (${unread})` : ''}`]);
   if (role === 'super_admin') nav.push(['accounts', '账号管理']);
   return <nav aria-label="主导航">{nav.map(([key, label]) => <button key={key} aria-current={view === key ? 'page' : undefined} onClick={() => onView(key)}>{label}</button>)}</nav>;
@@ -50,12 +52,20 @@ export function App() {
   }, [user]);
   useEffect(() => {
     if (!user) return;
-    api<{ unreadCount: number }>('/notifications/unread-count').then((value) => setUnread(value.unreadCount)).catch(() => undefined);
+    const controller = new AbortController();
+    api<{ unreadCount: number }>('/notifications/unread-count', { signal: controller.signal })
+      .then((value) => { if (!controller.signal.aborted) setUnread(value.unreadCount); })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [user, revision]);
+  useEffect(() => {
+    if (!user) return;
     const socket: Socket = io({ path: '/socket.io' });
-    const changed = () => refresh(); const notification = () => { refresh(); setUnread((value) => value + 1); };
+    const scheduler = createRevisionScheduler(refresh);
+    const changed = () => scheduler.schedule();
     for (const event of revisionEvents) socket.on(event, changed);
-    socket.on('notification:created', notification).on('notifications:read', changed).on('notifications:read-all', () => setUnread(0)).on('preferences:changed', changed);
-    return () => { socket.close(); };
+    socket.on('notification:created', changed).on('notifications:read', changed).on('notifications:read-all', changed).on('preferences:changed', changed);
+    return () => { scheduler.cancel(); socket.close(); };
   }, [user, refresh]);
   if (checking) return <main className="center"><div className="loader" />正在连接实验室数据…</main>;
   if (!user) return <Login onLogin={setUser} />;
@@ -75,22 +85,28 @@ export function App() {
       {activeView === 'audit' && <AuditView revision={revision} />}
       {activeView === 'notifications' && <NotificationsView user={user} revision={revision} onChanged={(count) => { if (count !== undefined) setUnread(count); else refresh(); }} />}
       {activeView === 'accounts' && user.role === 'super_admin' && <AccountsView currentUser={user} revision={revision} onChanged={refresh} />}
-      {activeView === 'invites' && approvalRoles.includes(user.role) && <InviteManagementView revision={revision} onChanged={refresh} />}
+      {activeView === 'invites' && inviteRoles.includes(user.role) && <InviteManagementView revision={revision} onChanged={refresh} />}
     </main>
   </div>;
 }
 
 export function Login({ onLogin }: { onLogin: (user: UserView) => void }) {
-  const [mode, setMode] = useState<'login' | 'register'>('login');
+  const [mode, setMode] = useState<'login' | 'register' | 'password_recovery'>('login');
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
   return <main className="login-page"><section className="login-panel">
     <div className="brand login-brand"><span className="brand-mark">LSF</span><div><h1>李少锋课题组 · 药品管理</h1><p>实验室药品操作台</p></div></div>
-    <div className="auth-modes" aria-label="登录或注册"><button type="button" aria-pressed={mode === 'login'} onClick={() => setMode('login')}>登录</button><button type="button" aria-pressed={mode === 'register'} onClick={() => setMode('register')}>注册</button></div>
+    <div className="auth-modes" aria-label="登录或注册"><button type="button" aria-pressed={mode === 'login'} onClick={() => { setMode('login'); setNotice(''); }}>登录</button><button type="button" aria-pressed={mode === 'register'} onClick={() => { setMode('register'); setNotice(''); }}>注册</button></div>
+    {notice && <div className="status success" role="status">{notice}</div>}
     {mode === 'login' ? <form onSubmit={async (event) => { event.preventDefault(); setBusy(true); setError(''); try { onLogin((await api<{ user: UserView }>('/auth/login', { method: 'POST', body: JSON.stringify({ username, password }) })).user); } catch (reason) { setError(reason instanceof ApiError ? reason.message : '登录失败'); } finally { setBusy(false); } }}>
       <label>用户名<input autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required /></label>
       <label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
       {error && <div className="status error" role="alert">{error}</div>}<button className="primary" disabled={busy}>{busy ? '登录中…' : '登录'}</button>
-    </form> : <RegisterForm onAuthenticated={onLogin} />}
+      <button type="button" onClick={() => { setError(''); setNotice(''); setMode('password_recovery'); }}>修改密码</button>
+    </form> : mode === 'register' ? <RegisterForm onAuthenticated={onLogin} /> : <PasswordRecoveryFlow
+      onBack={() => { setMode('login'); setNotice(''); }}
+      onComplete={(message) => { setMode('login'); setError(''); setNotice(message); }}
+    />}
   </section></main>;
 }
 

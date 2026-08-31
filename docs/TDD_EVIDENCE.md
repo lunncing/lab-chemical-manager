@@ -2111,3 +2111,380 @@ V1.6 production-copy verifier: 退出码 0；11 tables / 5 users unchanged；del
 ```text
 C:\Users\22808\AppData\Local\Temp\lab-chemical-manager-phase-b-e88b144268ab4b2789ee70b2496567cd
 ```
+
+## 2026-08-31 — V1.8 Phase A 密码修改与恢复后端
+
+范围严格限定为 Phase A：新增 additive/idempotent `password_reset_requests`、公开密码查询/原密码修改/申请/申诉/批准后重置 API、normal/super 管理员专用队列和审批、消息/公开审计/实时失效信号。未实现登录七阶段 wizard、消息审批 Modal、危险品角色/矩阵或任何性能项；未修改依赖/lock，未 commit，未访问或操作活动端口 3000/远程服务。
+
+安全边界：姓名只定位 active 且未删除的候选账号；申请生成 32-byte 随机 token，SQLite 只存 SHA-256，浏览器 Cookie 为 `HttpOnly; SameSite=Lax; Path=/; Expires=7天` 并按 `cookieSecure` 加 `Secure`。无原密码重置同时绑定 token hash、user、approved、version 和未过期条件。公开申请/申诉审计明确记录 `identityVerified=false`；`password-reset-request:changed` 只广播 `id/status/version/updatedAt`，不广播身份、申诉、审批内容或 token/hash。
+
+### Slice 1 — additive/idempotent schema 与 unresolved 唯一性
+
+RED：`npm test -- --run server/test/database-password-recovery.test.ts`
+
+```text
+server/test/database-password-recovery.test.ts (2 tests | 2 failed)
+expected [] to deeply equal password_reset_requests columns
+expected [] to have a length of 6
+```
+
+GREEN：同命令。
+
+```text
+Test Files 1 passed (1); Tests 2 passed (2)
+```
+
+覆盖 13 列、user/reviewer FK、token hash UNIQUE/CHECK、status CHECK、三个查询索引和 unresolved partial unique index；resolved 后允许新申请。合成 V1.7 文件库原 `users`/marker schema 与行逐值不变，首次新增为空，二次打开 schema/rows 完全一致，FK clean。
+
+### Slice 2 — lookup 与 change-with-current
+
+RED：`npm test -- --run server/test/password-recovery-public.test.ts`
+
+```text
+server/test/password-recovery-public.test.ts (5 tests | 5 failed)
+all public routes returned pre-existing authenticated 401
+```
+
+GREEN（含 schema 回归）：
+
+```text
+Test Files 2 passed (2); Tests 7 passed (7)
+```
+
+覆盖 `verify_current/pending/approved/rejected/appealed`、consumed/expired 回落、无/错 Cookie 隔离其他浏览器申请、active/deleted/0/同名；新密码 >=10/确认一致；不存在姓名与错误原密码相同 generic 401。成功改密原子更新 hash/version、删除全部 sessions、过期所有 unresolved authority、写无密码审计并断开 user room。强制 audit trigger 失败时密码/session/audit 全回滚。
+
+### Slice 3 — request、Cookie、通知与重复/并发
+
+RED：`npm test -- --run server/test/password-recovery-request.test.ts`
+
+```text
+server/test/password-recovery-request.test.ts (5 tests | 5 failed)
+request route returned pre-existing authenticated 401
+```
+
+GREEN：request/public/category focused suites。
+
+```text
+Test Files 3 passed (3); Tests 12 passed (12)
+```
+
+覆盖 43-char base64url/解码 32 bytes、7天 Expires、HttpOnly/Lax/Path、配置化 Secure（发放与清除）、DB 仅 SHA-256；normal_admin+super_admin `password_reset` 消息、公开审计、私有 notification realtime 和最小 request realtime。0/同名、重复 409、两并发仅 `[201,409]`，每用户仅一 unresolved；创建前旧过期请求变 expired/version+1。通知 trigger 失败时 request/audit/messages 全回滚且无 Set-Cookie。
+
+### Slice 4 — 管理员专用队列与 decision
+
+RED：`npm test -- --run server/test/password-reset-admin.test.ts`
+
+```text
+server/test/password-reset-admin.test.ts (5 tests | 5 failed)
+missing admin routes returned 404
+```
+
+GREEN（与前三个后端 slice 合跑）：
+
+```text
+Test Files 3 passed (3); Tests 15 passed (15)
+```
+
+覆盖 unauthenticated 401、member/hazard 403、normal/super 200；队列只含未过期 pending/appealed，通知偏好关闭仍不隐藏，返回必要 user/appeal/reviewer 信息且无 token/hash/password。拒绝说明必填，审批写 reviewer/comment/reviewedAt/version、subject notification/audit/realtime；wrong version/state 同一 generic 409，两管理员并发仅一个成功。过期先持久化 expired；通知 trigger 失败时 decision/reviewer/version/audit 全回滚。
+
+### Slice 5 — appeal 与 reset-approved 完整事务
+
+RED：`npm test -- --run server/test/password-recovery-appeal-reset.test.ts`
+
+```text
+server/test/password-recovery-appeal-reset.test.ts (7 tests | 7 failed)
+appeal/reset routes returned pre-existing authenticated 401
+```
+
+GREEN（全部 recovery 后端 slice）：
+
+```text
+Test Files 4 passed (4); Tests 22 passed (22)
+```
+
+覆盖申诉理由必填/<=1000、仅 matching Cookie + rejected、appealed/version+1、admin notifications/audit/realtime 且采购 task count 不变；无/错 Cookie 相同 generic 401，错状态/过期/重复为 generic 409，并发申诉单赢家。批准后重置验证 matching hash/user/status/version/expiry，原子更新密码、清 sessions、request consumed/consumedAt/version、审计、Cookie 清除和 socket disconnect；无/错 Cookie、非 approved、过期、重用和双并发覆盖。强制 appeal notification/reset audit 失败均验证整体回滚。
+
+### Realtime/identity hardening RED→GREEN
+
+在首次 GREEN 后把 realtime 断言收紧为精确四字段，并要求 public audit 明示未核验身份；运行 request+appeal/reset suites 得到 2 failures（原 payload 仍含 user/reason/review），实现最小事件和 `identityVerified=false` 后：
+
+```text
+Test Files 3 passed (3); Tests 17 passed (17)
+```
+
+### Acceptance extension
+
+`server/scripts/acceptance.ts` 继续使用 `listen(0)`，新增独立账号覆盖：原密码自由改密；32-byte/hash-only request；同/错浏览器 Cookie；管理员 role/专用队列/decision；拒绝→申诉→批准；批准后仅原 Cookie 重置；旧 sessions/旧密码失效；消息/audit/持久化零明文泄漏；密码请求不进入采购任务。
+
+```text
+PASS password recovery: current-password change, HttpOnly hash-only request, cookie isolation, admin queue/decision, appeal, approved reset, session revocation, zero plaintext leakage
+ACCEPTANCE OK (61 audit entries verified)
+```
+
+### V1.7 正式数据库 staged-copy 升级
+
+源 `D:\hermes\worktrees\lab-chemical-manager-v1\data\lab-chemical-manager.sqlite` 始终只读；显式候选副本先用 V1.7 baseline build 升级，再由新增 verifier 内部复制到系统 temp 并执行 V1.8 upgrade。候选文件验证后已 `git clean -f --` 精确清除，无残留。
+
+```text
+PASS V1.7 database copy: 11 legacy tables / 12 rows unchanged; password_reset_requests added empty with 5 indexes; FK clean; second open idempotent
+```
+
+### Final verification
+
+```text
+focused: 退出码 0；Test Files 7 passed (7)；Tests 28 passed (28)
+npm test: 退出码 0；Test Files 43 passed (43)；Tests 148 passed (148)，原 V1.7 124 tests 全保留
+npm run lint: 退出码 0
+npm run build: 退出码 0；77 modules transformed；index-AAC_056U.js / index-DQ3Tsmpa.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (61 audit entries verified)
+V1.7 staged production-copy verifier: 退出码 0；11 tables / 12 rows unchanged；empty table + 5 indexes；FK clean；second open idempotent
+git diff --check: 退出码 0（仅工作树 LF→CRLF 提示）
+git diff --exit-code -- package.json package-lock.json: 退出码 0；无输出
+wizard/hazard/performance scoped-file diff: 退出码 0；无输出
+HEAD: 2534d3fcc4037039e64fd8e09270beeab5f0a7a5；未 commit
+```
+
+首次 full regression 按预期只暴露 V1.4 migration fixture 把新空表计入“旧业务表”snapshot（42 files/147 tests 已通过、1 fixture failed）；fixture 继续逐表 hash 所有 V1.4 表，仅排除允许的 additive recovery table。修正后五个 migration suites 为 5 files/9 tests 全绿，最终 full 全绿。无 blocker，无候选数据库/进程残留。
+
+## 2026-08-31 — V1.8 Phase B 七阶段 UI、消息审批与危险品两阶段模型
+
+范围严格限定为 Phase B：在 Phase A 后端与安全边界之上实现登录页七阶段修改/恢复/申诉 UI、消息中心专用密码申请队列和应用内通过/拒绝框；修正采购四分类审批矩阵，增加 `pending_hazardous` / `deferred_hazardous`、危险采购人审批导航、角色可见名、阶段通知和编辑后阶段保持。未实现或改动 Phase C 的 realtime 合并、请求拆分/debounce、SQLite WAL/索引、静态缓存、有界查询或性能脚本；未修改依赖/lock，未 commit，未访问或操作活动端口 3000/远程服务。
+
+Phase A 基线先验：
+
+```text
+npm test -- --reporter=dot
+Test Files 43 passed (43); Tests 148 passed (148)
+```
+
+### Slice 1 — 四分类与两阶段服务端矩阵
+
+RED：先新增角色 × 四类申请、初始状态/通知、队列、加急危险两阶段、危险推迟/编辑和旧 normal 危险 deferred 兼容测试；旧实现 5 项全部失败。
+
+```text
+npm test -- --run server/test/purchase-approval-matrix-v18.test.ts --reporter=verbose
+Test Files 1 failed (1); Tests 5 failed (5)
+wrong pending_normal for normal hazardous
+normal_admin could approve normal hazardous
+normal_admin queue included hazardous work
+urgent hazardous became approved directly
+hazardous_buyer could not process the hazardous stage
+```
+
+在生产实现前继续把修改通知 audience 加入同一 RED suite。首轮 GREEN 后套件共 6 项：
+
+```text
+Test Files 1 passed (1); Tests 6 passed (6)
+```
+
+覆盖：
+
+- normal 非危险 → `pending_normal`，normal/super；normal 危险 → `pending_hazardous`，hazard/super；所有 urgent → `pending_super`，第一阶段仅 super。
+- 16 个“角色 × 申请类别”首个决定组合逐项验证 200/403、状态和 version；尤其 hazard 对尚在 `pending_super` 的加急危险品为 403。
+- 加急危险品老师通过只进入 `pending_hazardous`，写 `purchase_hazardous_review_requested`，通知 hazard+super，且无 `待采购任务`；危险复核通过后才 approved/通知申请人/创建危险采购任务。
+- 危险复核推迟 → `deferred_hazardous`；编辑 → `pending_hazardous`，不重走老师阶段；普通/加急非危险编辑分别回原 normal/super 阶段；兼容旧 normal 危险 `deferred`。
+- normal/hazard/super 审批队列与 summary 精确；创建和修改的四类 notification audience/category 精确；采购完成权限未变。
+
+最终 diff 审核又识别出一个 mutation 绕过候选：普通危险品在 `pending_hazardous` 时若把 requestType 改成 urgent，不能沿用尚未经过老师的危险复核阶段。先补 focused RED：
+
+```text
+npm test -- --run server/test/purchase-approval-matrix-v18.test.ts -t "cannot gain urgent" --reporter=verbose
+expected pending_super; received pending_hazardous
+Tests 1 failed | 6 skipped
+```
+
+GREEN：只有“原请求已经是 urgent 且已经到达危险复核”的编辑才保持第二阶段；normal → urgent 必须回 `pending_super`，hazard 为 403，老师通过后才再进 `pending_hazardous`。
+
+```text
+Test Files 1 passed (1); Tests 7 passed (7)
+```
+
+### Slice 2 — 登录页七阶段 UI
+
+RED：
+
+```text
+npm test -- --run client/src/password-recovery-ui.test.tsx --reporter=verbose
+Cannot find module './password-recovery-ui.js'
+Test Files 1 failed (1)
+```
+
+GREEN：`PasswordRecoveryFlow` 复用 Phase A 五条公开 API，并将 lookup 的 `verify_current / pending / appealed / approved / rejected` 映射到浏览器当前 Cookie 对应界面。七阶段渲染测试逐屏锁定允许字段、按钮、required/minLength/maxLength 和等待/拒绝文案；API 测试锁定 exact path/body，并证明 approved reset 与 appeal body 不携带姓名。
+
+```text
+client/src/password-recovery-ui.test.tsx (4 tests)
+```
+
+登录默认页只有“修改密码”入口，不预渲染申请/申诉控件；自由修改成功与批准后重置成功均回登录并显示成功提示。申请页明确人工核验和同浏览器限制；pending/appealed 共用只读等待页；rejected 才能进入 1000 字申诉页。
+
+### Slice 3 — 消息中心专用密码审批队列/Modal
+
+RED：
+
+```text
+npm test -- --run client/src/password-reset-admin-ui.test.tsx --reporter=verbose
+Cannot find module './password-reset-admin-ui.js'
+Test Files 1 failed (1)
+```
+
+GREEN：
+
+```text
+Test Files 1 passed (1); Tests 5 passed (5)
+```
+
+覆盖 normal/super 可见、member/hazard 不加载；pending 显示“密码修改申请”、appealed 显示“密码修改申诉”和理由；队列为空仍独立显示，因而不受个人通知类别/阅读筛选或 preference 影响。通过说明可选、拒绝说明必填并阻止 whitespace；应用内 `ActionDialog` 展示人工身份核验警告、user/version，提交 exact decision/comment/version，DOM/payload 无 token/hash。`password-reset-request:changed` 已加入 client revision invalidation；主导航无密码任务项。
+
+### Slice 4 — 危险审批前端状态/导航/角色名
+
+RED：
+
+```text
+npm test -- --run client/src/purchase-approval-ui-v18.test.tsx --reporter=verbose
+Test Files 1 failed (1); Tests 5 failed (5)
+```
+
+失败点分别为缺少 client 角色/阶段矩阵、缺少“危险品复核”阶段标签、缺少两个新状态、hazard 无待审批导航/旧角色名、缺少 password-reset realtime invalidation。GREEN 后 5/5；连同既有 UI 回归：
+
+```text
+Test Files 8 passed (8); Tests 33 passed (33)
+```
+
+审批页按钮按 persisted stage + role 再过滤（服务端仍是安全边界）；`pending_hazardous` / `deferred_hazardous` 行明确标成“危险品复核”，不会显示为老师加急审批。`hazardous_buyer` 内部枚举保持不变，可见名改为“审批与危险采购人”，左侧同时显示待审批/待采购，但仍无邀请码或密码重置栏目。
+
+### Acceptance / production bundle
+
+`server/scripts/acceptance.ts` 保持 in-memory SQLite + `listen(0)`，新增/修正：四类初始状态和通知 audience、normal/hazard/super 队列、hazard 对 urgent first-stage 403、老师通过后无采购任务、hazard+super 危险复核通知、`deferred_hazardous` 编辑回第二阶段、危险复核最终通过才创建采购任务、两阶段 audit 保留。
+
+```text
+PASS purchase state machine: four-class matrix, super-only urgent first stage, hazardous second-stage defer/edit/approve, reject/withdraw
+ACCEPTANCE OK (64 audit entries verified)
+```
+
+production build 为 79 modules；bundle 同时包含七个阶段标题、“提交申诉并申请”、“密码修改审批/申诉”、“危险品复核”和“审批与危险采购人”。生产 client 原生 prompt/confirm/alert 调用为 0。
+
+### Final verification
+
+```text
+npm test: 退出码 0；Test Files 47 passed (47)；Tests 169 passed (169)，Phase A 基线 148 tests 全保留
+npm run lint: 退出码 0
+npm run build: 退出码 0；79 modules transformed；index-BpoPTBGQ.js / index-BR7tbcGd.css
+npm run acceptance: 退出码 0；ACCEPTANCE OK (64 audit entries verified)
+V1.7 staged production-copy verifier: 退出码 0；11 legacy tables / 12 rows unchanged；empty recovery table + 5 indexes；FK clean；second open idempotent
+production bundle: 12/12 required Phase B phrases；production native dialog calls 0
+git diff --check: 退出码 0（仅工作树 LF→CRLF 提示）
+git diff --exit-code -- package.json package-lock.json: 退出码 0；无依赖/lock 改动
+Phase C implementation marker scan: none
+HEAD: 2534d3fcc4037039e64fd8e09270beeab5f0a7a5；未 commit
+```
+
+所有 HTTP test/acceptance 继续使用系统分配端口，未访问、停止或修改活动端口 3000；未启动候选常驻进程，无临时数据库/进程需要清理。无 blocker。
+
+## 2026-08-31 — V1.8 Phase C 2C/4T/6GB 性能优化
+
+范围严格限定为 SPEC C1–C6；Phase A+B 基线先完整复跑：47 files / 169 tests 全通过。没有新增依赖、没有 lockfile/commit/远程/活动 3000 操作，所有 HTTP 与 benchmark 均监听系统分配端口。
+
+### C1 — realtime burst coalescing / authoritative unread
+
+RED 先锁定 50–100 ms 窗口、20 次调度只刷新一次和 cleanup 取消 timer；旧模块缺少 scheduler：
+
+```text
+client/src/realtime-events.test.tsx
+2 failed | 1 passed
+TypeError: createRevisionScheduler is not a function
+```
+
+GREEN 使用 75 ms single-pending-timer scheduler。所有 entity/audit/notification/read/preference Socket 事件只调用 scheduler；cleanup 同时 cancel timer 和关闭 Socket。未读数不再 `+1`，而在合并后的 revision 上重新请求服务端计数。
+
+```text
+Test Files 2 passed (2); Tests 11 passed (11)
+20-event transaction burst -> one refresh; cleanup -> zero refresh
+```
+
+### C2 — inventory request plan / debounce / stale response
+
+RED：
+
+```text
+Cannot find module './inventory-requests.js'
+Test Files 1 failed (1)
+```
+
+GREEN：搜索输入固定 250 ms debounce；search plan 只有编码后的 `/chemicals?search=`，revision plan 才含 members/incoming/mine。chemical 与 supporting 两组各自取消旧 `AbortController`，并以 current gate 阻止忽略 abort 的旧响应写回；effect cleanup 同样取消请求/定时器。
+
+```text
+client/src/inventory-requests.test.tsx: 3 passed
+request-planning/inventory focused regression: 3 files / 12 tests passed
+```
+
+### C3 — file SQLite configuration / additive index
+
+真实临时 legacy 文件库 RED：journal mode 为 `delete`，且 memory/file 均缺少 `idx_audit_logs_created`（2 failed）。GREEN 后文件连接依次安装 5000 ms busy timeout、WAL、NORMAL；memory 仍为 `journal_mode=memory`。原 users/audit 行逐值不变，foreign_keys=1、`foreign_key_check=[]`，新索引存在。
+
+```text
+performance-database + password-recovery migration + acid-cabinet migration
+Test Files 3 passed (3); Tests 6 passed (6)
+file: journal_mode=wal, synchronous=1, busy_timeout=5000
+legacy rows unchanged; FK clean; memory compatible
+```
+
+Phase B 已完成并保留 V1.7 staged production-copy 结果（11 legacy tables / 12 rows unchanged；empty recovery table + 5 indexes；FK clean；second open idempotent）。Phase C 没有重新打开活动源库；无参数调用 verifier 被其 usage assertion 在任何 DB I/O 前拒绝，不计作验证，也未触碰活动库。C3 的独立临时 legacy 文件测试覆盖本阶段 PRAGMA/index/行保持变化。
+
+### C4 — static/API/Socket cache headers
+
+临时 client build 的 HTTP RED 首先证明旧系统忽略 test dist 且无所需 header。首次实现又由测试识别出 Engine.IO 自带 `no-store` 与大小写不同的附加 header 合并为 `no-store, no-store`；统一覆盖小写 header 后 GREEN：
+
+```text
+/assets/app-a1b2c3.js -> public,max-age=31536000,immutable
+/, /index.html, /inventory/deep-link -> no-cache
+/api/health, Socket.IO polling -> no-store
+Test Files 1 passed (1); Tests 1 passed (1)
+```
+
+### C5 — bounded lists / complete task semantics
+
+RED 高容量测试：audit 原本已正确 500/id DESC；purchases all 返回 520 而不是 500；notifications 列表的 unreadCount 误取展示窗口 500 而不是真实 510。
+
+```text
+Test Files 1 failed (1); Tests 2 failed | 1 passed (3)
+```
+
+GREEN 后 audit 与 purchases all/mine 都最多 500 且 ID 倒序；notifications 展示仍为 500，但 list 和专用 endpoint 共用独立 SQL COUNT。审批任务 520 条、加急目录 505 条均完整返回，明确不截断任务/目录业务语义。
+
+```text
+bounded lists + purchase tasks + routing
+Test Files 3 passed (3); Tests 7 passed (7)
+```
+
+### C6 — dependency-free benchmark / thresholds
+
+RED 从不存在的 benchmark module 开始。GREEN contract 锁定至少 1000 audits / 500 purchases、100 health runs、20 并发、nearest-rank p50/p95、严格 p95<200 ms 与 RSS<250 MB；等于阈值即失败，任一并发错误即失败。脚本不引入 package，在临时 WAL 文件库填充 1200/600 行，异常/成功均关闭 server/DB 并删除 temp 目录。
+
+最终 production build 后当前机器实测（只作回归线，不声称等同目标服务器）：
+
+```text
+endpoint    runs  p50 ms  p95 ms  response bytes  rows
+health       100    15.24    16.28              15     1
+audit         30    15.17    16.07          121113   500
+purchases     30    14.64    17.15          192015   500
+20 concurrent health: 0 errors, 16.22 ms elapsed
+RSS: 93.14 MB
+thresholds: PASS (p95 < 200 ms; RSS < 250 MB)
+```
+
+### Phase C final verification
+
+```text
+npm test: exit 0; Test Files 52 passed (52); Tests 183 passed (183)
+npm run lint: exit 0
+npm run build: exit 0; 80 modules transformed; index-L4P3XQ5z.js / index-BR7tbcGd.css
+npm run acceptance: exit 0; ACCEPTANCE OK (64 audit entries verified)
+node server/dist/server/scripts/performance-benchmark.js: exit 0; thresholds passed
+git diff --check: exit 0（仅工作树 LF→CRLF 提示）
+git diff --exit-code -- package.json package-lock.json: exit 0；无 dependency/lock 改动
+Phase C files trailing-whitespace scan: 0 matches
+temp benchmark/test directories: 0；本 worktree Node processes: 0
+HEAD: 2534d3fcc4037039e64fd8e09270beeab5f0a7a5；未 commit
+```
+
+无已知功能 blocker。V1.7 active source 未在 Phase C 重跑是明确的安全边界，不影响独立 legacy migration regression 和已保留的 Phase B staged-copy 证据。

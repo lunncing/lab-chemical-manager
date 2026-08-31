@@ -7,16 +7,21 @@ import { mapNotification } from './domain.js';
 import { preferencesSchema } from './validation.js';
 import { notificationCategories } from '../../shared/types.js';
 
+function unreadCount(db: Db, userId: number): number {
+  const row = db.prepare('SELECT COUNT(*) count FROM notifications WHERE user_id=? AND read_at IS NULL').get(userId) as { count: number };
+  return Number(row.count);
+}
+
 export function notificationsRouter(db: Db, io: SocketServer): Router {
   const router = Router();
   router.get('/', (request, res) => {
     const req = request as AuthedRequest;
     const rows = db.prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 500').all(req.user.id) as Array<Record<string, unknown>>;
-    res.json({ notifications: rows.map(mapNotification), unreadCount: rows.filter((row) => !row.read_at).length });
+    res.json({ notifications: rows.map(mapNotification), unreadCount: unreadCount(db, req.user.id) });
   });
   router.get('/unread-count', (request, res) => {
-    const req = request as AuthedRequest; const row = db.prepare('SELECT COUNT(*) count FROM notifications WHERE user_id=? AND read_at IS NULL').get(req.user.id) as { count: number };
-    res.json({ unreadCount: Number(row.count) });
+    const req = request as AuthedRequest;
+    res.json({ unreadCount: unreadCount(db, req.user.id) });
   });
   router.patch('/:id/read', asyncRoute((request, res) => {
     const req = request as AuthedRequest; const now = new Date().toISOString();

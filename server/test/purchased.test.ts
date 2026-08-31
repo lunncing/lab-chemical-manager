@@ -41,7 +41,7 @@ describe('approved to purchased transition', () => {
     expect((await api(ctx.base, admin, `/api/purchases/${pending.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: pending.version }) })).status).toBe(409);
 
     const normal = await approve(admin, await create(member, '非危险采购'));
-    const dangerous = await approve(admin, await create(member, '危险采购', true));
+    const dangerous = await approve(hazard, await create(member, '危险采购', true));
     expect((await api(ctx.base, member, `/api/purchases/${normal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: normal.version }) })).status).toBe(403);
     expect((await api(ctx.base, hazard, `/api/purchases/${normal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: normal.version }) })).status).toBe(403);
     expect((await api(ctx.base, admin, `/api/purchases/${dangerous.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: dangerous.version }) })).status).toBe(403);
@@ -56,16 +56,16 @@ describe('approved to purchased transition', () => {
     expect((await api(ctx.base, teacher, `/api/purchases/${normal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: purchasedNormal.version }) })).status).toBe(409);
 
     const superNormal = await approve(admin, await create(member, '超级管理员非危险采购'));
-    const superDangerous = await approve(admin, await create(member, '超级管理员危险采购', true));
+    const superDangerous = await approve(teacher, await create(member, '超级管理员危险采购', true));
     expect((await api(ctx.base, teacher, `/api/purchases/${superNormal.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: superNormal.version }) })).status).toBe(200);
     expect((await api(ctx.base, teacher, `/api/purchases/${superDangerous.id}/purchased`, { method: 'POST', body: JSON.stringify({ version: superDangerous.version }) })).status).toBe(200);
   });
 
   it('routes approval tasks, broadcasts completion, notifies the applicant, audits it, and removes it only from active queues', async () => {
     const member = await login(ctx.base, 'member-a'); const admin = await login(ctx.base, 'admin');
-    const teacher = await login(ctx.base, 'teacher');
+    const teacher = await login(ctx.base, 'teacher'); const hazard = await login(ctx.base, 'hazard');
     const normal = await approve(admin, await create(member, '路由非危险品'));
-    const dangerous = await approve(admin, await create(member, '路由危险品', true));
+    const dangerous = await approve(hazard, await create(member, '路由危险品', true));
 
     const taskRecipients = (purchaseId: number) => (ctx.system.db.prepare(`SELECT u.username FROM notifications n JOIN users u ON u.id=n.user_id
       WHERE n.object_type='purchase' AND n.object_id=? AND n.title='待采购任务' ORDER BY u.username`).all(String(purchaseId)) as Array<{ username: string }>).map(({ username }) => username);

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { io as connectSocket, type Socket } from 'socket.io-client';
 import { createSystem } from '../src/system.js';
-import { verifyPassword } from '../src/security.js';
+import { digestToken, verifyPassword } from '../src/security.js';
 import { currentBeijingWeekStart, weekEnd } from '../src/purchase-weeks.js';
 import { deleteAccount } from '../src/account-deletion.js';
 
@@ -55,6 +55,94 @@ try {
   assert.deepEqual([teacher.user.role, admin.user.role, hazard.user.role, alice.user.role], ['super_admin', 'normal_admin', 'hazardous_buyer', 'member']);
   assert.equal((await request('/users', alice.cookie)).status, 403); assert.equal((await request('/users', teacher.cookie)).status, 200);
   console.log('PASS roles: five demo logins and server-side 403/200 authorization');
+
+  const currentPasswordUser = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
+    username: 'acceptance-password-current', displayName: '验收原密码成员', role: 'member', password: 'CurrentPassword123!',
+  }) }), 201)).user;
+  const currentPasswordSession = await login('acceptance-password-current', 'CurrentPassword123!');
+  assert.deepEqual(await json(await request('/password-recovery/lookup', undefined, { method: 'POST', body: JSON.stringify({ displayName: '验收原密码成员' }) })), { state: 'verify_current' });
+  assert.deepEqual(await json(await request('/password-recovery/change-with-current', undefined, { method: 'POST', body: JSON.stringify({
+    displayName: '验收原密码成员', currentPassword: 'CurrentPassword123!', newPassword: 'CurrentPasswordChanged123!', newPasswordConfirm: 'CurrentPasswordChanged123!',
+  }) })), { changed: true });
+  assert.equal((await request('/auth/me', currentPasswordSession.cookie)).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-password-current', password: 'CurrentPassword123!' }) })).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-password-current', password: 'CurrentPasswordChanged123!' }) })).status, 200);
+  const currentPasswordRow = system.db.prepare('SELECT password_hash FROM users WHERE id=?').get(currentPasswordUser.id) as { password_hash: string };
+  assert(verifyPassword('CurrentPasswordChanged123!', currentPasswordRow.password_hash));
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='password_changed' AND object_id=?`).get(String(currentPasswordUser.id)) as { count: number }).count, 1);
+
+  const recoveryUser = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
+    username: 'acceptance-password-recovery', displayName: '验收密码恢复成员', role: 'member', password: 'RecoveryOriginal123!',
+  }) }), 201)).user;
+  const recoverySession = await login('acceptance-password-recovery', 'RecoveryOriginal123!');
+  const adminRecoverySocket = await connect(admin.cookie);
+  const requestChanged = event(adminRecoverySocket, 'password-reset-request:changed');
+  const requestNotification = event(adminRecoverySocket, 'notification:created');
+  const recoveryCreatedResponse = await request('/password-recovery/request', undefined, { method: 'POST', body: JSON.stringify({ displayName: '验收密码恢复成员' }) });
+  const recoveryCreated = await json(recoveryCreatedResponse, 201);
+  assert.deepEqual(recoveryCreated, { state: 'pending' });
+  const recoveryCookieHeader = recoveryCreatedResponse.headers.get('set-cookie')!;
+  assert.match(recoveryCookieHeader, /^lab_password_recovery=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Lax; Path=\/; Expires=/);
+  const recoveryCookie = recoveryCookieHeader.split(';')[0]!;
+  const recoveryToken = recoveryCookie.slice('lab_password_recovery='.length);
+  assert.equal(Buffer.from(recoveryToken, 'base64url').length, 32);
+  const requestEvent = await requestChanged; const requestMessage = await requestNotification;
+  assert.equal(requestEvent.status, 'pending'); assert.equal(requestMessage.category, 'password_reset');
+  const recoveryRow = system.db.prepare(`SELECT id,recovery_token_hash,status,version FROM password_reset_requests WHERE user_id=?`).get(recoveryUser.id) as { id: number; recovery_token_hash: string; status: string; version: number };
+  assert.equal(recoveryRow.recovery_token_hash, digestToken(recoveryToken)); assert.notEqual(recoveryRow.recovery_token_hash, recoveryToken);
+  assert.deepEqual(await json(await request('/password-recovery/lookup', undefined, { method: 'POST', headers: { cookie: recoveryCookie }, body: JSON.stringify({ displayName: '验收密码恢复成员' }) })), { state: 'pending' });
+  assert.deepEqual(await json(await request('/password-recovery/lookup', undefined, { method: 'POST', headers: { cookie: 'lab_password_recovery=wrong-browser' }, body: JSON.stringify({ displayName: '验收密码恢复成员' }) })), { state: 'verify_current' });
+  assert.equal((await request('/password-recovery/request', undefined, { method: 'POST', body: JSON.stringify({ displayName: '验收密码恢复成员' }) })).status, 409);
+  assert.equal((await request('/password-reset-requests', recoverySession.cookie)).status, 403);
+  assert.equal((await request('/password-reset-requests', hazard.cookie)).status, 403);
+  const pendingQueue = await json(await request('/password-reset-requests', admin.cookie));
+  const queuedRecovery = pendingQueue.requests.find((item: any) => item.id === recoveryRow.id);
+  assert.deepEqual({ status: queuedRecovery.status, version: queuedRecovery.version, username: queuedRecovery.user.username }, { status: 'pending', version: 1, username: 'acceptance-password-recovery' });
+  assert(!JSON.stringify(pendingQueue).includes(recoveryToken)); assert(!JSON.stringify(pendingQueue).includes(recoveryRow.recovery_token_hash));
+
+  const approvedChanged = event(adminRecoverySocket, 'password-reset-request:changed');
+  const approvedRecovery = (await json(await request(`/password-reset-requests/${recoveryRow.id}/decision`, admin.cookie, { method: 'POST', body: JSON.stringify({
+    decision: 'approved', comment: '验收人工核验通过', version: queuedRecovery.version,
+  }) }))).request;
+  assert.equal(approvedRecovery.status, 'approved'); assert.equal((await approvedChanged).status, 'approved');
+  assert.deepEqual(await json(await request('/password-recovery/lookup', undefined, { method: 'POST', headers: { cookie: recoveryCookie }, body: JSON.stringify({ displayName: '验收密码恢复成员' }) })), { state: 'approved' });
+  const missingReset = await request('/password-recovery/reset-approved', undefined, { method: 'POST', body: JSON.stringify({ newPassword: 'RecoveryChanged123!', newPasswordConfirm: 'RecoveryChanged123!' }) });
+  const wrongReset = await request('/password-recovery/reset-approved', undefined, { method: 'POST', headers: { cookie: 'lab_password_recovery=wrong-browser' }, body: JSON.stringify({ newPassword: 'RecoveryChanged123!', newPasswordConfirm: 'RecoveryChanged123!' }) });
+  assert.equal(missingReset.status, 401); assert.equal(wrongReset.status, 401); assert.deepEqual(await missingReset.json(), await wrongReset.json());
+  const consumedChanged = event(adminRecoverySocket, 'password-reset-request:changed');
+  const resetResponse = await request('/password-recovery/reset-approved', undefined, { method: 'POST', headers: { cookie: recoveryCookie }, body: JSON.stringify({
+    newPassword: 'RecoveryChanged123!', newPasswordConfirm: 'RecoveryChanged123!',
+  }) });
+  assert.deepEqual(await json(resetResponse), { changed: true }); assert.match(resetResponse.headers.get('set-cookie')!, /^lab_password_recovery=;.*Max-Age=0/);
+  assert.equal((await consumedChanged).status, 'consumed'); assert.equal((await request('/auth/me', recoverySession.cookie)).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-password-recovery', password: 'RecoveryOriginal123!' }) })).status, 401);
+  assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-password-recovery', password: 'RecoveryChanged123!' }) })).status, 200);
+
+  const appealUser = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
+    username: 'acceptance-password-appeal', displayName: '验收密码申诉成员', role: 'member', password: 'AppealOriginal123!',
+  }) }), 201)).user;
+  const appealCreatedResponse = await request('/password-recovery/request', undefined, { method: 'POST', body: JSON.stringify({ displayName: '验收密码申诉成员' }) });
+  await json(appealCreatedResponse, 201);
+  const appealCookie = appealCreatedResponse.headers.get('set-cookie')!.split(';')[0]!;
+  const appealToken = appealCookie.slice('lab_password_recovery='.length);
+  const appealRow = system.db.prepare(`SELECT id,version FROM password_reset_requests WHERE user_id=?`).get(appealUser.id) as { id: number; version: number };
+  const rejectedAppeal = (await json(await request(`/password-reset-requests/${appealRow.id}/decision`, teacher.cookie, { method: 'POST', body: JSON.stringify({ decision: 'rejected', comment: '首次身份资料不足', version: appealRow.version }) }))).request;
+  assert.equal(rejectedAppeal.status, 'rejected');
+  assert.deepEqual(await json(await request('/password-recovery/appeal', undefined, { method: 'POST', headers: { cookie: appealCookie }, body: JSON.stringify({ reason: '补充课题组登记信息，请重新核验' }) })), { state: 'appealed' });
+  const appealedQueue = await json(await request('/password-reset-requests', teacher.cookie));
+  const queuedAppeal = appealedQueue.requests.find((item: any) => item.id === appealRow.id);
+  assert.deepEqual({ status: queuedAppeal.status, version: queuedAppeal.version, reason: queuedAppeal.appealReason }, { status: 'appealed', version: 3, reason: '补充课题组登记信息，请重新核验' });
+  const approvedAppeal = (await json(await request(`/password-reset-requests/${appealRow.id}/decision`, teacher.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: queuedAppeal.version }) }))).request;
+  assert.equal(approvedAppeal.status, 'approved');
+  await json(await request('/password-recovery/reset-approved', undefined, { method: 'POST', headers: { cookie: appealCookie }, body: JSON.stringify({ newPassword: 'AppealChanged123!', newPasswordConfirm: 'AppealChanged123!' }) }));
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM password_reset_requests WHERE status='consumed' AND user_id IN (?,?)`).get(recoveryUser.id, appealUser.id) as { count: number }).count, 2);
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 0, procurementCount: 0 });
+  const recoveryActions = JSON.stringify({
+    audits: system.db.prepare(`SELECT summary,details_json FROM audit_logs WHERE object_type='password_reset_request' OR action='password_changed'`).all(),
+    notifications: system.db.prepare(`SELECT category,title,body,object_type,object_id FROM notifications WHERE category='password_reset'`).all(),
+  });
+  for (const secret of [recoveryToken, appealToken, 'RecoveryOriginal123!', 'RecoveryChanged123!', 'AppealOriginal123!', 'AppealChanged123!']) assert(!recoveryActions.includes(secret));
+  console.log('PASS password recovery: current-password change, HttpOnly hash-only request, cookie isolation, admin queue/decision, appeal, approved reset, session revocation, zero plaintext leakage');
 
   assert.equal((await request('/registration-invites', alice.cookie, { method: 'POST' })).status, 403);
   assert.equal((await request('/registration-invites', hazard.cookie, { method: 'POST' })).status, 403);
@@ -130,13 +218,25 @@ try {
 
   const normal = await createPurchase(alice.cookie, '普通试剂', 'normal'); const urgent = await createPurchase(alice.cookie, '加急试剂', 'urgent');
   const dangerous = await createPurchase(alice.cookie, '叠氮化钠', 'normal', true); const dangerousUrgent = await createPurchase(alice.cookie, '加急危险试剂', 'urgent', true); const rejectable = await createPurchase(bob.cookie, '驳回试剂', 'normal');
-  assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 3, procurementCount: 0 });
+  assert.deepEqual([normal.status, urgent.status, dangerous.status, dangerousUrgent.status], ['pending_normal', 'pending_super', 'pending_hazardous', 'pending_super']);
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 2, procurementCount: 0 });
+  assert.deepEqual(await json(await request('/purchases/tasks/summary', hazard.cookie)), { approvalCount: 1, procurementCount: 0 });
   assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 5, procurementCount: 0 });
   const adminApprovals = (await json(await request('/purchases/tasks/approvals', admin.cookie))).purchases.map((item: any) => item.id);
+  const hazardApprovals = (await json(await request('/purchases/tasks/approvals', hazard.cookie))).purchases.map((item: any) => item.id);
   const teacherApprovals = (await json(await request('/purchases/tasks/approvals', teacher.cookie))).purchases.map((item: any) => item.id);
-  assert(adminApprovals.includes(normal.id) && adminApprovals.includes(dangerous.id) && adminApprovals.includes(rejectable.id) && !adminApprovals.includes(urgent.id));
+  assert(adminApprovals.includes(normal.id) && adminApprovals.includes(rejectable.id) && !adminApprovals.includes(dangerous.id) && !adminApprovals.includes(urgent.id));
+  assert.deepEqual(hazardApprovals, [dangerous.id]);
   assert(teacherApprovals.includes(normal.id) && teacherApprovals.includes(urgent.id) && teacherApprovals.includes(dangerous.id) && teacherApprovals.includes(dangerousUrgent.id) && teacherApprovals.includes(rejectable.id));
+  const requestNotificationRecipients = (purchaseId: number) => (system.db.prepare(`SELECT u.username FROM notifications n JOIN users u ON u.id=n.user_id
+    WHERE n.object_type='purchase' AND n.object_id=? ORDER BY u.username`).all(String(purchaseId)) as Array<{ username: string }>).map(({ username }) => username);
+  assert.deepEqual(requestNotificationRecipients(normal.id), ['admin', 'teacher']);
+  assert.deepEqual(requestNotificationRecipients(dangerous.id), ['hazard', 'teacher']);
+  assert.deepEqual(requestNotificationRecipients(urgent.id), ['teacher']);
+  assert.deepEqual(requestNotificationRecipients(dangerousUrgent.id), ['teacher']);
   assert.equal((await request(`/purchases/${urgent.id}/decision`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: urgent.version }) })).status, 403);
+  assert.equal((await request(`/purchases/${dangerous.id}/decision`, admin.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: dangerous.version }) })).status, 403);
+  assert.equal((await request(`/purchases/${dangerousUrgent.id}/decision`, hazard.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: dangerousUrgent.version }) })).status, 403);
   const approvedNormal = await decide(admin.cookie, normal, 'approved');
   const currentWeek = currentBeijingWeekStart(); const previousWeek = shiftWeek(currentWeek, -7);
   const archiveEntry = system.db.prepare('SELECT week_start,added_at FROM purchase_weekly_entries WHERE purchase_id=?').get(normal.id) as { week_start: string; added_at: string };
@@ -144,17 +244,30 @@ try {
   let deferredUrgent = await decide(teacher.cookie, urgent, 'deferred', '等待预算');
   deferredUrgent = (await json(await request(`/purchases/${urgent.id}`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ purpose: '补充后的加急用途', version: deferredUrgent.version }) }))).purchase;
   assert.equal(deferredUrgent.status, 'pending_super'); assert.equal(deferredUrgent.approvalComment, null);
-  const approvedUrgent = await decide(teacher.cookie, deferredUrgent, 'approved'); const approvedDangerous = await decide(admin.cookie, dangerous, 'approved'); const approvedDangerousUrgent = await decide(teacher.cookie, dangerousUrgent, 'approved');
+  const approvedUrgent = await decide(teacher.cookie, deferredUrgent, 'approved'); const approvedDangerous = await decide(hazard.cookie, dangerous, 'approved');
+  const dangerousHazardousStage = await decide(teacher.cookie, dangerousUrgent, 'approved', '老师初审通过');
+  assert.equal(dangerousHazardousStage.status, 'pending_hazardous');
+  const hazardousReviewRecipients = (system.db.prepare(`SELECT u.username FROM notifications n JOIN users u ON u.id=n.user_id
+    WHERE n.object_type='purchase' AND n.object_id=? AND n.title='危险品复核任务' ORDER BY u.username`).all(String(dangerousUrgent.id)) as Array<{ username: string }>).map(({ username }) => username);
+  assert.deepEqual(hazardousReviewRecipients, ['hazard', 'teacher']);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM notifications WHERE object_type='purchase' AND object_id=? AND title='待采购任务'`).get(String(dangerousUrgent.id)) as { count: number }).count, 0);
+  assert.equal((system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE object_type='purchase' AND object_id=? AND action='purchase_hazardous_review_requested'`).get(String(dangerousUrgent.id)) as { count: number }).count, 1);
+  assert((await json(await request('/purchases/tasks/approvals', hazard.cookie))).purchases.some((item: any) => item.id === dangerousUrgent.id));
+  let deferredDangerousUrgent = await decide(hazard.cookie, dangerousHazardousStage, 'deferred', '补充危险品操作方案');
+  assert.equal(deferredDangerousUrgent.status, 'deferred_hazardous');
+  deferredDangerousUrgent = (await json(await request(`/purchases/${dangerousUrgent.id}`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ purpose: '补充后的加急危险用途', version: deferredDangerousUrgent.version }) }))).purchase;
+  assert.equal(deferredDangerousUrgent.status, 'pending_hazardous'); assert.equal(deferredDangerousUrgent.approvalComment, null);
+  const approvedDangerousUrgent = await decide(hazard.cookie, deferredDangerousUrgent, 'approved', '危险品复核通过');
   const rejected = await decide(admin.cookie, rejectable, 'rejected', '不符合采购要求');
   assert.equal(approvedNormal.status, 'approved'); assert.equal(approvedUrgent.status, 'approved'); assert.equal(approvedDangerous.status, 'approved'); assert.equal(approvedDangerousUrgent.status, 'approved'); assert.equal(rejected.status, 'rejected');
   const withdrawable = await createPurchase(bob.cookie, '撤销试剂', 'normal'); const withdrawn = (await json(await request(`/purchases/${withdrawable.id}/withdraw`, bob.cookie, { method: 'POST', body: JSON.stringify({ version: withdrawable.version }) }))).purchase; assert.equal(withdrawn.status, 'withdrawn');
-  console.log('PASS purchase state machine: normal/urgent/hazardous, approve/defer/revise/reject/withdraw, forbidden urgent approval');
+  console.log('PASS purchase state machine: four-class matrix, super-only urgent first stage, hazardous second-stage defer/edit/approve, reject/withdraw');
 
   assert.deepEqual(await json(await request('/purchases/tasks/summary', admin.cookie)), { approvalCount: 0, procurementCount: 2 });
   assert.deepEqual(await json(await request('/purchases/tasks/summary', hazard.cookie)), { approvalCount: 0, procurementCount: 2 });
   assert.deepEqual(await json(await request('/purchases/tasks/summary', teacher.cookie)), { approvalCount: 0, procurementCount: 4 });
   assert.deepEqual(await json(await request('/purchases/tasks/summary', alice.cookie)), { approvalCount: 0, procurementCount: 0 });
-  assert.equal((await request('/purchases/tasks/approvals', hazard.cookie)).status, 403); assert.equal((await request('/purchases/tasks/procurement', alice.cookie)).status, 403);
+  assert.deepEqual((await json(await request('/purchases/tasks/approvals', hazard.cookie))).purchases, []); assert.equal((await request('/purchases/tasks/procurement', alice.cookie)).status, 403);
   const adminProcurement = (await json(await request('/purchases/tasks/procurement', admin.cookie))).purchases.map((item: any) => item.id);
   const hazardProcurement = (await json(await request('/purchases/tasks/procurement', hazard.cookie))).purchases.map((item: any) => item.id);
   const teacherProcurement = (await json(await request('/purchases/tasks/procurement', teacher.cookie))).purchases.map((item: any) => item.id);
@@ -166,7 +279,7 @@ try {
   assert.equal((await request('/purchases/tasks/procurement?requestType=normal&requestType=urgent', admin.cookie)).status, 400);
   const procurementTaskRecipients = (purchaseId: number) => (system.db.prepare(`SELECT u.username FROM notifications n JOIN users u ON u.id=n.user_id
     WHERE n.object_type='purchase' AND n.object_id=? AND n.title='待采购任务' ORDER BY u.username`).all(String(purchaseId)) as Array<{ username: string }>).map(({ username }) => username);
-  assert.deepEqual(procurementTaskRecipients(normal.id), ['admin', 'teacher']); assert.deepEqual(procurementTaskRecipients(dangerous.id), ['hazard', 'teacher']);
+  assert.deepEqual(procurementTaskRecipients(normal.id), ['admin', 'teacher']); assert.deepEqual(procurementTaskRecipients(dangerous.id), ['hazard', 'teacher']); assert.deepEqual(procurementTaskRecipients(dangerousUrgent.id), ['hazard', 'teacher']);
   console.log('PASS purchase tasks: server summaries, role-specific approval/procurement queues, hazardous/nonhazardous routing');
 
   const normalCatalogBody = await json(await request('/purchases/catalog/normal', admin.cookie)); const normalCatalog = normalCatalogBody.purchases;
