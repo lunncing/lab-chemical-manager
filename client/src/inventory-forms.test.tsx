@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
+import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, CasNumberField, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
 
 describe('inventory form payloads', () => {
   it('renders numeric shelf option values and serializes 2 层 as JSON number 2', () => {
@@ -14,21 +14,28 @@ describe('inventory form payloads', () => {
 
   it('rejects invalid move fields with a Chinese client-side error before serialization', () => {
     expect(() => buildMovePayload('B', '2 层', 3)).toThrow('柜层必须是 1–5 的整数');
-    expect(() => buildMovePayload('C', '2', 3)).toThrow('C 柜仅允许第 1 层');
+    expect(() => buildMovePayload('C1', '2', 3)).toThrow('C1 仅允许第 1 层');
+    expect(() => buildMovePayload('G2', '5', 3)).toThrow('G2 仅允许第 1 层');
     expect(() => buildMovePayload('A', '2', 0)).toThrow('药品版本无效');
   });
 
-  it('offers C with one locked shelf and normalizes cabinet changes without null payloads', () => {
+  it('offers all stable locations with honest warnings and locks every single-location shelf', () => {
     const cabinets = renderToStaticMarkup(<select><CabinetOptions /></select>);
-    expect(cabinets).toContain('C · 酸柜（仅酸性物质）');
-    const acidShelves = renderToStaticMarkup(<ShelfSelect cabinet="C" value="1" onChange={() => undefined} />);
-    expect(acidShelves).toContain('disabled=""');
-    expect((acidShelves.match(/<option/g) ?? [])).toHaveLength(1);
-    expect(locationAfterCabinetChange('C', '4')).toEqual({ cabinet: 'C', shelf: '1' });
+    expect(cabinets).toContain('C1 · 酸柜（仅允许已确认的酸性物质）');
+    expect(cabinets).toContain('C2 · 碱柜（仅允许已确认的碱性物质）');
+    expect(cabinets).toContain('G1 · 高效液相色谱旁手套箱');
+    expect(cabinets).toContain('G2 · 靠墙手套箱');
+    expect((cabinets.match(/<option/g) ?? [])).toHaveLength(6);
+    for (const cabinet of ['C1', 'C2', 'G1', 'G2'] as const) {
+      const singleShelves = renderToStaticMarkup(<ShelfSelect cabinet={cabinet} value="1" onChange={() => undefined} />);
+      expect(singleShelves).toContain('disabled=""');
+      expect((singleShelves.match(/<option/g) ?? [])).toHaveLength(1);
+      expect(locationAfterCabinetChange(cabinet, '4')).toEqual({ cabinet, shelf: '1' });
+      expect(buildMovePayload(cabinet, '1', 3)).toEqual({ cabinet, shelf: 1, version: 3 });
+    }
     expect(locationAfterCabinetChange('A', '1')).toEqual({ cabinet: 'A', shelf: '1' });
     const normalShelves = renderToStaticMarkup(<ShelfSelect cabinet="A" value="1" onChange={() => undefined} />);
     expect((normalShelves.match(/<option/g) ?? [])).toHaveLength(5);
-    expect(buildMovePayload('C', '1', 3)).toEqual({ cabinet: 'C', shelf: 1, version: 3 });
   });
 });
 
@@ -39,15 +46,25 @@ describe('direct inbound ownership', () => {
     expect(html).not.toContain('<select');
 
     const payload = buildDirectInboundPayload({
-      name: '乙腈', specification: 'HPLC 4L', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: '2',
+      name: '乙腈', specification: 'HPLC 4L', casNumber: ' 75-05-8 ', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: '2',
     });
-    expect(payload).toEqual({ name: '乙腈', specification: 'HPLC 4L', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: 2 });
+    expect(payload).toEqual({ name: '乙腈', specification: 'HPLC 4L', casNumber: '75-05-8', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: 2 });
     expect(payload).not.toHaveProperty('ownerId');
     expect(buildDirectInboundPayload({
-      name: '盐酸', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: '1',
-    })).toMatchObject({ cabinet: 'C', shelf: 1 });
+      name: '盐酸', specification: 'AR', casNumber: '   ', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C1', shelf: '1',
+    })).toMatchObject({ casNumber: null, cabinet: 'C1', shelf: 1 });
     expect(() => buildDirectInboundPayload({
-      name: '错误盐酸', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: '2',
-    })).toThrow('C 柜仅允许第 1 层');
+      name: '错误盐酸', specification: 'AR', casNumber: null, inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C1', shelf: '2',
+    })).toThrow('C1 仅允许第 1 层');
+  });
+
+  it('renders optional CAS copy and rejects invalid CAS client-side', () => {
+    const html = renderToStaticMarkup(<CasNumberField />);
+    expect(html).toContain('CAS号（推荐填写）');
+    expect(html).toContain('name="casNumber"');
+    expect(html).not.toContain('required');
+    expect(() => buildDirectInboundPayload({
+      name: '乙腈', specification: 'HPLC', casNumber: '75-05-9', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'A', shelf: '1',
+    })).toThrow('CAS号校验位不正确');
   });
 });

@@ -20,20 +20,20 @@ describe('proxy inbound create and approval', () => {
   it('approves a C1 proxy inbound request and rejects C2 before creating a request', async () => {
     const alice = await login(ctx.base, 'member-a'); const bob = await login(ctx.base, 'member-b'); const bobId = await userId(alice, 'member-b');
     const invalid = await api(ctx.base, alice, '/api/inbound-requests', { method: 'POST', body: JSON.stringify({
-      targetUserId: bobId, name: '错误代入库酸', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: 2,
+      targetUserId: bobId, name: '错误代入库碱', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C2', shelf: 2,
     }) });
-    expect(invalid.status).toBe(400); expect((await invalid.json()).error.message).toContain('C 柜仅允许第 1 层');
+    expect(invalid.status).toBe(400); expect((await invalid.json()).error.message).toContain('C2 仅允许第 1 层');
 
     const createdResponse = await api(ctx.base, alice, '/api/inbound-requests', { method: 'POST', body: JSON.stringify({
-      targetUserId: bobId, name: '代入库盐酸', specification: 'AR 500mL', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: 1,
+      targetUserId: bobId, name: '代入库盐酸', specification: 'AR 500mL', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C1', shelf: 1,
     }) });
     expect(createdResponse.status).toBe(201); const created = (await createdResponse.json()).request;
-    expect(created).toMatchObject({ cabinet: 'C', shelf: 1, status: 'pending' });
+    expect(created).toMatchObject({ cabinet: 'C1', shelf: 1, status: 'pending' });
     const approvedResponse = await api(ctx.base, bob, `/api/inbound-requests/${created.id}/decision`, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: created.version }) });
     expect(approvedResponse.status).toBe(200); const approved = await approvedResponse.json();
-    expect(approved.chemical).toMatchObject({ cabinet: 'C', shelf: 1, owner: { username: 'member-b' }, inboundOperator: { username: 'member-a' } });
+    expect(approved.chemical).toMatchObject({ cabinet: 'C1', shelf: 1, owner: { username: 'member-b' }, inboundOperator: { username: 'member-a' } });
     const logs = (await (await api(ctx.base, alice, '/api/audit-logs')).json()).logs as Array<{ summary: string }>;
-    expect(logs.some(({ summary }) => summary.includes('C 柜 1 层'))).toBe(true);
+    expect(logs.some(({ summary }) => summary.includes('C1 柜 1 层'))).toBe(true);
   });
 
   it('creates only a pending request scoped to requester/target, then atomically approves it into stock', async () => {

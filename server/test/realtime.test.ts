@@ -34,6 +34,28 @@ describe('authenticated Socket.IO realtime', () => {
     expect((await aliceAudit).action).toBe('inventory_inbound'); expect((await bobNotification).category).toBe('inventory_inbound');
   });
 
+  it('broadcasts a committed detail correction to every online user with a summary-only audit event', async () => {
+    const aliceCookie = await login(ctx.base, 'member-a'); const bobCookie = await login(ctx.base, 'member-b');
+    const createdResponse = await api(ctx.base, aliceCookie, '/api/chemicals', { method: 'POST', body: JSON.stringify({
+      name: '待更正乙腈', specification: 'HPLC 4L', casNumber: '75-05-8', inboundAt: '2026-08-29T08:00:00.000Z', cabinet: 'B', shelf: 2,
+    }) });
+    const created = (await createdResponse.json()).chemical;
+    const alice = await connect(aliceCookie); const bob = await connect(bobCookie);
+    const aliceChange = nextEvent<any>(alice, 'chemical:changed'); const bobChange = nextEvent<any>(bob, 'chemical:changed');
+    const aliceAudit = nextEvent<any>(alice, 'audit:created'); const bobAudit = nextEvent<any>(bob, 'audit:created');
+
+    const response = await api(ctx.base, aliceCookie, `/api/chemicals/${created.id}/details`, { method: 'PATCH', body: JSON.stringify({
+      name: '实时更正乙腈', version: created.version,
+    }) });
+    expect(response.status).toBe(200);
+    expect(await aliceChange).toMatchObject({ id: created.id, name: '实时更正乙腈', version: created.version + 1 });
+    expect(await bobChange).toMatchObject({ id: created.id, name: '实时更正乙腈', version: created.version + 1 });
+    for (const audit of [await aliceAudit, await bobAudit]) {
+      expect(audit).toMatchObject({ action: 'inventory_details_corrected', summary: '更正药品信息：实时更正乙腈（名称）' });
+      expect(audit).not.toHaveProperty('details');
+    }
+  });
+
   it('rejects a Socket.IO connection without an authenticated cookie', async () => {
     const error = await new Promise<Error>((resolve) => {
       const socket = socketClient(ctx.base, { transports: ['websocket'], forceNew: true }); sockets.push(socket); socket.once('connect_error', resolve);

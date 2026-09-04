@@ -6,7 +6,7 @@ export const notificationCategories = [
   'password_reset',
 ] as const;
 export type NotificationCategory = (typeof notificationCategories)[number];
-export type Cabinet = 'A' | 'B' | 'C';
+export type Cabinet = 'A' | 'B' | 'C1' | 'C2' | 'G1' | 'G2';
 export type InboundRequestStatus = 'pending' | 'approved' | 'rejected' | 'withdrawn';
 export type PurchaseType = 'normal' | 'urgent';
 export type PurchaseStatus = 'pending_normal' | 'pending_super' | 'pending_hazardous' | 'approved' | 'purchased' | 'deferred' | 'deferred_hazardous' | 'rejected' | 'withdrawn';

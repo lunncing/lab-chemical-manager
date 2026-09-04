@@ -67,7 +67,9 @@ describe('public password recovery appeal', () => {
     const updatedAt = (ctx.system.db.prepare(`SELECT updated_at FROM password_reset_requests WHERE id=?`).get(request.id) as { updated_at: string }).updated_at;
     expect(changed).toEqual({ id: request.id, status: 'appealed', version: 2, updatedAt });
     expect(audit).toMatchObject({ action: 'password_reset_appealed', objectId: String(request.id) });
-    expect(audit.details).toEqual({ subjectUserId: request.userId, status: 'appealed', source: 'public_password_recovery', identityVerified: false });
+    expect(audit).not.toHaveProperty('details');
+    const storedDetails = ctx.system.db.prepare(`SELECT details_json FROM audit_logs WHERE action='password_reset_appealed' AND object_id=?`).get(String(request.id)) as { details_json: string };
+    expect(JSON.parse(storedDetails.details_json)).toEqual({ subjectUserId: request.userId, status: 'appealed', source: 'public_password_recovery', identityVerified: false });
     expect(notification).toMatchObject({ category: 'password_reset', title: '密码修改申诉' });
     expect((ctx.system.db.prepare(`SELECT COUNT(*) count FROM notifications n JOIN users u ON u.id=n.user_id
       WHERE n.category='password_reset' AND n.title='密码修改申诉' AND u.role IN ('normal_admin','super_admin')`).get() as { count: number }).count).toBe(2);

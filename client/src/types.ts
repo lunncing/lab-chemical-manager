@@ -11,7 +11,7 @@ export interface CreatedRegistrationInvite {
   id: number; code: string; codeHint: string; createdAt: string; expiresAt: string; version: number;
 }
 export interface Chemical {
-  id: number; name: string; specification: string; owner: Person; inboundOperator: Person; inboundAt: string;
+  id: number; name: string; specification: string; casNumber: string | null; owner: Person; inboundOperator: Person; inboundAt: string;
   cabinet: Cabinet; shelf: number; status: 'active' | 'discarded'; discardReason: string | null;
   version: number; createdAt: string; updatedAt: string;
 }
@@ -21,7 +21,7 @@ export interface Purchase {
 }
 export interface PurchaseWeekInfo { weekStart: string; weekEnd: string; isCurrent: boolean; }
 export interface PurchaseWeekSummary extends PurchaseWeekInfo { count: number; approvedCount: number; purchasedCount: number; }
-export interface AuditLog { id: number; actor: Person; action: string; objectType: string; objectId: string; summary: string; details: unknown; createdAt: string; }
+export interface AuditLog { id: number; actor: Person; action: string; objectType: string; objectId: string; summary: string; createdAt: string; }
 export interface NotificationItem { id: number; userId: number; category: string; title: string; body: string; objectType: string | null; objectId: string | null; readAt: string | null; createdAt: string; }
 export type PasswordResetRequestStatus = 'pending' | 'approved' | 'rejected' | 'appealed' | 'consumed' | 'expired';
 export interface PasswordResetRequest {
@@ -30,7 +30,7 @@ export interface PasswordResetRequest {
   reviewedAt: string | null; consumedAt: string | null;
 }
 export interface InboundRequest {
-  id: number; requester: Person; targetUser: Person; name: string; specification: string; inboundAt: string;
+  id: number; requester: Person; targetUser: Person; name: string; specification: string; casNumber: string | null; inboundAt: string;
   cabinet: Cabinet; shelf: number; status: InboundRequestStatus; decisionComment: string | null; chemicalId: number | null;
   version: number; createdAt: string; updatedAt: string; decidedAt: string | null; withdrawnAt: string | null;
 }

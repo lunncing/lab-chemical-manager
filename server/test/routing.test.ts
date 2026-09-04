@@ -43,6 +43,8 @@ describe('catalog and notification routing', () => {
     const logs = await api(ctx.base, member, '/api/audit-logs');
     const audit = (await logs.json()).logs.find((log: any) => log.summary.includes('屏蔽测试'));
     expect(audit).toBeDefined();
-    expect(audit.details).toMatchObject({ cabinet: 'A', shelf: 3, ownerId: 4 });
+    expect(audit).not.toHaveProperty('details');
+    const storedAudit = ctx.system.db.prepare(`SELECT details_json FROM audit_logs WHERE summary LIKE '%屏蔽测试%'`).get() as { details_json: string };
+    expect(JSON.parse(storedAudit.details_json)).toMatchObject({ cabinet: 'A', shelf: 3, ownerId: 4 });
   });
 });

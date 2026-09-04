@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { hashPassword } from './security.js';
 import { beijingWeekStart } from './purchase-weeks.js';
-import { migrateAcidCabinetTables } from './cabinet-migration.js';
+import { migrateStorageLocationsAndCas } from './cabinet-migration.js';
 import type { Role, UserView } from '../../shared/types.js';
 
 export type Db = DatabaseSync;
@@ -49,10 +49,10 @@ CREATE TABLE IF NOT EXISTS password_reset_requests (
   consumed_at TEXT
 );
 CREATE TABLE IF NOT EXISTS chemicals (
-  id INTEGER PRIMARY KEY, name TEXT NOT NULL, specification TEXT NOT NULL,
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL, specification TEXT NOT NULL, cas_number TEXT,
   owner_id INTEGER NOT NULL REFERENCES users(id), inbound_operator_id INTEGER NOT NULL REFERENCES users(id),
-  inbound_at TEXT NOT NULL, cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C')),
-  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet='C' AND shelf=1)), status TEXT NOT NULL CHECK(status IN ('active','discarded')),
+  inbound_at TEXT NOT NULL, cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C1','C2','G1','G2')),
+  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet IN ('C1','C2','G1','G2') AND shelf=1)), status TEXT NOT NULL CHECK(status IN ('active','discarded')),
   discard_reason TEXT, version INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS inventory_movements (
@@ -89,9 +89,9 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE TABLE IF NOT EXISTS inbound_requests (
   id INTEGER PRIMARY KEY, requester_id INTEGER NOT NULL REFERENCES users(id), target_user_id INTEGER NOT NULL REFERENCES users(id),
-  name TEXT NOT NULL, specification TEXT NOT NULL, inbound_at TEXT NOT NULL,
-  cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C')),
-  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet='C' AND shelf=1)),
+  name TEXT NOT NULL, specification TEXT NOT NULL, cas_number TEXT, inbound_at TEXT NOT NULL,
+  cabinet TEXT NOT NULL CHECK(cabinet IN ('A','B','C1','C2','G1','G2')),
+  shelf INTEGER NOT NULL CHECK((cabinet IN ('A','B') AND shelf BETWEEN 1 AND 5) OR (cabinet IN ('C1','C2','G1','G2') AND shelf=1)),
   status TEXT NOT NULL CHECK(status IN ('pending','approved','rejected','withdrawn')) DEFAULT 'pending',
   decision_comment TEXT, chemical_id INTEGER REFERENCES chemicals(id), version INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL, decided_at TEXT, withdrawn_at TEXT
@@ -121,7 +121,8 @@ export function openDatabase(path: string, seedDemo = true): Db {
     if (path !== ':memory:') db.exec('PRAGMA busy_timeout=5000; PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;');
     db.exec(schema);
     migrateDeletedAt(db);
-    migrateAcidCabinetTables(db);
+    migrateStorageLocationsAndCas(db);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_chemicals_cas_number ON chemicals(cas_number)');
     backfillWeeklyPurchaseEntries(db);
     if (seedDemo) seedDemoUsers(db);
     return db;

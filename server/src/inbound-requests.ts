@@ -21,7 +21,7 @@ function mapInboundRequest(row: Record<string, unknown>) {
     id: Number(row.id),
     requester: { id: Number(row.requester_id), username: String(row.requester_username), displayName: String(row.requester_name) },
     targetUser: { id: Number(row.target_user_id), username: String(row.target_username), displayName: String(row.target_name) },
-    name: String(row.name), specification: String(row.specification), inboundAt: String(row.inbound_at),
+    name: String(row.name), specification: String(row.specification), casNumber: row.cas_number === null ? null : String(row.cas_number), inboundAt: String(row.inbound_at),
     cabinet: row.cabinet as Cabinet, shelf: Number(row.shelf), status: row.status as InboundRequestStatus,
     decisionComment: row.decision_comment === null ? null : String(row.decision_comment),
     chemicalId: row.chemical_id === null ? null : Number(row.chemical_id), version: Number(row.version),
@@ -58,10 +58,10 @@ export function inboundRequestsRouter(db: Db, io: SocketServer): Router {
     if (!target) throw new HttpError(400, '代入库对象不存在或已停用', 'VALIDATION_ERROR');
     const committed = transaction(db, () => {
       const result = db.prepare(`INSERT INTO inbound_requests
-        (requester_id,target_user_id,name,specification,inbound_at,cabinet,shelf,status,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,'pending',?,?)`).run(req.user.id, input.targetUserId, input.name, input.specification, input.inboundAt, input.cabinet, input.shelf, now, now);
+        (requester_id,target_user_id,name,specification,cas_number,inbound_at,cabinet,shelf,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,'pending',?,?)`).run(req.user.id, input.targetUserId, input.name, input.specification, input.casNumber, input.inboundAt, input.cabinet, input.shelf, now, now);
       const id = Number(result.lastInsertRowid); const inboundRequest = mapInboundRequest(requestRow(db, id));
-      const audit = insertAudit(db, { actorId: req.user.id, action: 'proxy_inbound_requested', objectType: 'inbound_request', objectId: id, summary: `向 ${target.display_name} 提交 ${input.name} 的代入库申请，位置 ${formatLocation(input.cabinet, input.shelf)}`, details: { targetUserId: input.targetUserId, cabinet: input.cabinet, shelf: input.shelf } }, now);
+      const audit = insertAudit(db, { actorId: req.user.id, action: 'proxy_inbound_requested', objectType: 'inbound_request', objectId: id, summary: `向 ${target.display_name} 提交 ${input.name} 的代入库申请，位置 ${formatLocation(input.cabinet, input.shelf)}`, details: { targetUserId: input.targetUserId, cabinet: input.cabinet, shelf: input.shelf, casNumber: input.casNumber } }, now);
       const notifications = insertNotifications(db, { userIds: eligibleUserIds(db, 'proxy_inbound', 'u.id=?', [input.targetUserId]), category: 'proxy_inbound', title: '代入库申请', body: `${req.user.displayName} 为您提交了 ${input.name} 的代入库申请，是否同意？目标位置 ${formatLocation(input.cabinet, input.shelf)}`, objectType: 'inbound_request', objectId: id }, now);
       return { inboundRequest, audit, notifications };
     });
@@ -93,8 +93,8 @@ export function inboundRequestsRouter(db: Db, io: SocketServer): Router {
       const updated = db.prepare(`UPDATE inbound_requests SET status='approved',decision_comment=?,version=version+1,updated_at=?,decided_at=?
         WHERE id=? AND status='pending' AND version=?`).run(input.comment ?? null, now, now, id, input.version);
       if (!updated.changes) throw new HttpError(409, '申请状态或版本已变化', 'CONFLICT');
-      const result = db.prepare(`INSERT INTO chemicals (name,specification,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,'active',?,?)`).run(String(current.name), String(current.specification), Number(current.target_user_id), Number(current.requester_id), String(current.inbound_at), String(current.cabinet), Number(current.shelf), now, now);
+      const result = db.prepare(`INSERT INTO chemicals (name,specification,cas_number,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,'active',?,?)`).run(String(current.name), String(current.specification), current.cas_number === null ? null : String(current.cas_number), Number(current.target_user_id), Number(current.requester_id), String(current.inbound_at), String(current.cabinet), Number(current.shelf), now, now);
       const chemicalId = Number(result.lastInsertRowid);
       db.prepare(`INSERT INTO inventory_movements (chemical_id,operator_id,action,to_cabinet,to_shelf,created_at) VALUES (?,?,'inbound',?,?,?)`).run(chemicalId, Number(current.requester_id), String(current.cabinet), Number(current.shelf), now);
       db.prepare('UPDATE inbound_requests SET chemical_id=? WHERE id=?').run(chemicalId, id);

@@ -6,13 +6,13 @@ import {
 } from './inventory-action-dialogs.js';
 
 const chemical: Chemical = {
-  id: 7, name: '乙腈', specification: 'HPLC 4L', cabinet: 'B', shelf: 2, status: 'active', version: 3,
+  id: 7, name: '乙腈', specification: 'HPLC 4L', casNumber: '75-05-8', cabinet: 'B', shelf: 2, status: 'active', version: 3,
   owner: { id: 4, username: 'member-a', displayName: '成员甲' },
   inboundOperator: { id: 5, username: 'member-b', displayName: '成员乙' },
   inboundAt: '2026-08-30T08:00:00.000Z', createdAt: '2026-08-30T08:00:00.000Z', updatedAt: '2026-08-30T08:00:00.000Z', discardReason: null,
 };
 const request: InboundRequest = {
-  id: 11, requester: chemical.owner, targetUser: chemical.inboundOperator, name: chemical.name, specification: chemical.specification,
+  id: 11, requester: chemical.owner, targetUser: chemical.inboundOperator, name: chemical.name, specification: chemical.specification, casNumber: chemical.casNumber,
   inboundAt: chemical.inboundAt, cabinet: chemical.cabinet, shelf: chemical.shelf, status: 'pending', decisionComment: null,
   chemicalId: null, version: 4, createdAt: chemical.createdAt, updatedAt: chemical.updatedAt, decidedAt: null, withdrawnAt: null,
 };

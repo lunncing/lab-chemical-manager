@@ -1,9 +1,18 @@
 import { z } from 'zod';
 import { notificationCategories, roles } from './types.js';
 import { cabinetIds, locationError } from './cabinets.js';
+import { normalizeCasNumber } from './cas.js';
 
-const cabinetSchema = z.enum(cabinetIds, { error: '柜号仅允许 A、B 或 C' });
+const cabinetSchema = z.enum(cabinetIds, { error: '柜号仅允许 A、B、C1、C2、G1 或 G2' });
 const shelfSchema = z.number({ error: '柜层必须是整数' });
+const normalizedCasNumberSchema = z.string({ error: 'CAS号必须是文本' }).nullable().transform((value, ctx) => {
+  try { return normalizeCasNumber(value); }
+  catch (error) {
+    ctx.addIssue({ code: 'custom', message: error instanceof Error ? error.message : 'CAS号无效' });
+    return z.NEVER;
+  }
+});
+export const casNumberSchema = normalizedCasNumberSchema.optional().transform((value) => value ?? null);
 
 function validateLocation(value: { cabinet: unknown; shelf: unknown }, ctx: { addIssue(issue: { code: 'custom'; message: string; path: string[] }): void }) {
   const message = locationError(value.cabinet, value.shelf);
@@ -52,14 +61,21 @@ export const userUpdateSchema = z.object({
 
 export const chemicalCreateSchema = z.object({
   name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
-  inboundAt: z.iso.datetime(),
+  casNumber: casNumberSchema, inboundAt: z.iso.datetime(),
   cabinet: cabinetSchema, shelf: shelfSchema,
 }).strict().superRefine(validateLocation);
+export const chemicalCorrectionSchema = z.object({
+  name: z.string({ error: '药品名称不能为空' }).trim().min(1, '药品名称不能为空').max(200, '药品名称不能超过 200 个字符').optional(),
+  specification: z.string({ error: '规格不能为空' }).trim().min(1, '规格不能为空').max(200, '规格不能超过 200 个字符').optional(),
+  casNumber: normalizedCasNumberSchema.optional(),
+  inboundAt: z.iso.datetime({ error: '入库时间不能为空或格式无效' }).optional(),
+  version: z.number().int().positive(),
+}).strict();
 export const moveSchema = z.object({ cabinet: cabinetSchema, shelf: shelfSchema, version: z.number().int().positive() }).strict().superRefine(validateLocation);
 export const discardSchema = z.object({ confirmed: z.literal(true), reason: z.string().trim().max(500).optional(), version: z.number().int().positive() }).strict();
 export const inboundRequestCreateSchema = z.object({
   targetUserId: z.number().int().positive(), name: z.string().trim().min(1).max(200), specification: z.string().trim().min(1).max(200),
-  inboundAt: z.iso.datetime(), cabinet: cabinetSchema, shelf: shelfSchema,
+  casNumber: casNumberSchema, inboundAt: z.iso.datetime(), cabinet: cabinetSchema, shelf: shelfSchema,
 }).strict().superRefine(validateLocation);
 export const inboundRequestDecisionSchema = z.object({
   decision: z.enum(['approved', 'rejected']), comment: z.string().trim().max(1000).optional(), version: z.number().int().positive(),

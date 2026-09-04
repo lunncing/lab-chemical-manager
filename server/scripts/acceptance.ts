@@ -5,6 +5,7 @@ import { createSystem } from '../src/system.js';
 import { digestToken, verifyPassword } from '../src/security.js';
 import { currentBeijingWeekStart, weekEnd } from '../src/purchase-weeks.js';
 import { deleteAccount } from '../src/account-deletion.js';
+import type { Cabinet } from '../../shared/types.js';
 
 const system = createSystem({ databasePath: ':memory:', seedDemo: true });
 const sockets: Socket[] = [];
@@ -45,8 +46,8 @@ async function decide(cookie: string, purchase: any, decision: 'approved' | 'def
 async function markPurchased(cookie: string, purchase: any) {
   return (await json(await request(`/purchases/${purchase.id}/purchased`, cookie, { method: 'POST', body: JSON.stringify({ version: purchase.version }) }))).purchase;
 }
-async function createInboundRequest(cookie: string, targetUserId: number, name: string, cabinet: 'A' | 'B' | 'C' = 'B', shelf = 2) {
-  return (await json(await request('/inbound-requests', cookie, { method: 'POST', body: JSON.stringify({ targetUserId, name, specification: 'HPLC 4L', inboundAt: new Date().toISOString(), cabinet, shelf }) }), 201)).request;
+async function createInboundRequest(cookie: string, targetUserId: number, name: string, cabinet: Cabinet = 'B', shelf = 2, casNumber?: string) {
+  return (await json(await request('/inbound-requests', cookie, { method: 'POST', body: JSON.stringify({ targetUserId, name, specification: 'HPLC 4L', ...(casNumber ? { casNumber } : {}), inboundAt: new Date().toISOString(), cabinet, shelf }) }), 201)).request;
 }
 
 try {
@@ -176,28 +177,51 @@ try {
 
   const aliceSocket = await connect(alice.cookie); const bobSocket = await connect(bob.cookie);
   const firstRealtime = event(aliceSocket, 'chemical:changed'); const secondRealtime = event(bobSocket, 'chemical:changed');
-  const inbound = (await json(await request('/chemicals', bob.cookie, { method: 'POST', body: JSON.stringify({ name: '验收乙醇', specification: 'AR 500mL', inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 1 }) }), 201)).chemical;
+  const inbound = (await json(await request('/chemicals', bob.cookie, { method: 'POST', body: JSON.stringify({ name: '验收乙醇', specification: 'AR 500mL', casNumber: ' 64-17-5 ', inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 1 }) }), 201)).chemical;
   assert.equal((await firstRealtime).id, inbound.id); assert.equal((await secondRealtime).id, inbound.id);
-  assert.equal((await request(`/chemicals/${inbound.id}/move`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'B', shelf: 9, version: inbound.version }) })).status, 400);
-  const moved = (await json(await request(`/chemicals/${inbound.id}/move`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'B', shelf: 4, version: inbound.version }) }))).chemical;
+  assert.equal(inbound.casNumber, '64-17-5');
+  assert((await json(await request('/chemicals?search=64-17-5', alice.cookie))).chemicals.some((item: any) => item.id === inbound.id));
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ name: '越权更正', version: inbound.version }) })).status, 403);
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, admin.cookie, { method: 'PATCH', body: JSON.stringify({ name: '角色越权更正', version: inbound.version }) })).status, 403);
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, hazard.cookie, { method: 'PATCH', body: JSON.stringify({ name: '危险采购越权更正', version: inbound.version }) })).status, 403);
+  const correctedAlice = event(aliceSocket, 'chemical:changed'); const correctedBob = event(bobSocket, 'chemical:changed'); const correctionAuditEvent = event(aliceSocket, 'audit:created');
+  const ownerCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '验收乙醇（更正）', version: inbound.version }) }))).chemical;
+  assert.equal((await correctedAlice).name, '验收乙醇（更正）'); assert.equal((await correctedBob).name, '验收乙醇（更正）');
+  const publicCorrectionAudit = await correctionAuditEvent;
+  assert.equal(publicCorrectionAudit.summary, '更正药品信息：验收乙醇（更正）（名称）'); assert.equal('details' in publicCorrectionAudit, false);
+  const storedCorrection = system.db.prepare(`SELECT summary,details_json FROM audit_logs WHERE action='inventory_details_corrected' AND object_id=?`).get(String(inbound.id)) as { summary: string; details_json: string };
+  assert.deepEqual(JSON.parse(storedCorrection.details_json), { before: { name: '验收乙醇' }, after: { name: '验收乙醇（更正）' } });
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '验收乙醇（更正）', version: ownerCorrected.version }) })).status, 400);
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '旧版本更正', version: inbound.version }) })).status, 409);
+  const superCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, teacher.cookie, { method: 'PATCH', body: JSON.stringify({ specification: 'AR 1L', version: ownerCorrected.version }) }))).chemical;
+  assert.equal(superCorrected.specification, 'AR 1L');
+  assert.equal((await request(`/chemicals/${inbound.id}/move`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'B', shelf: 9, version: superCorrected.version }) })).status, 400);
+  const moved = (await json(await request(`/chemicals/${inbound.id}/move`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'B', shelf: 4, version: superCorrected.version }) }))).chemical;
   const discarded = (await json(await request(`/chemicals/${inbound.id}/discard`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ confirmed: true, reason: '验收废弃', version: moved.version }) }))).chemical;
   assert.equal(discarded.status, 'discarded'); assert.equal((await json(await request('/chemicals?cabinet=B&shelf=4', alice.cookie))).chemicals.length, 0);
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, teacher.cookie, { method: 'PATCH', body: JSON.stringify({ name: '废弃后更正', version: discarded.version }) })).status, 409);
   assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '越权归属', specification: '1 瓶', ownerId: bob.user.id, inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 2 }) })).status, 400);
-  console.log('PASS inventory/realtime: inbound, cross-owner move, invalid shelf, discard, two Socket.IO clients');
+  console.log('PASS inventory/realtime/correction: CAS inbound/search, owner/super authorization, strict state/version/no-op guards, structured private audit, summary-only public audit, cross-owner move, discard, two clients');
 
-  assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '错误酸柜', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 2 }) })).status, 400);
-  const acid = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收盐酸', specification: 'AR 500mL', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 1 }) }), 201)).chemical;
-  assert.equal((await json(await request('/chemicals?cabinet=C', alice.cookie))).chemicals.some((item: any) => item.id === acid.id), true);
-  assert.equal((await json(await request('/chemicals?cabinet=C&shelf=1', alice.cookie))).chemicals.some((item: any) => item.id === acid.id), true);
-  assert.equal((await request('/chemicals?cabinet=C&shelf=2', alice.cookie)).status, 400);
+  assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '旧柜号', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 1 }) })).status, 400);
+  assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '错误碱柜', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C2', shelf: 2 }) })).status, 400);
+  const acid = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收盐酸', specification: 'AR 500mL', casNumber: '7647-01-0', inboundAt: new Date().toISOString(), cabinet: 'C1', shelf: 1 }) }), 201)).chemical;
+  const baseChemical = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收氢氧化钠', specification: 'AR 500g', casNumber: '1310-73-2', inboundAt: new Date().toISOString(), cabinet: 'C2', shelf: 1 }) }), 201)).chemical;
+  const gloveOne = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收手套箱样品一', specification: '1瓶', inboundAt: new Date().toISOString(), cabinet: 'G1', shelf: 1 }) }), 201)).chemical;
+  const gloveTwo = (await json(await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '验收手套箱样品二', specification: '1瓶', inboundAt: new Date().toISOString(), cabinet: 'G2', shelf: 1 }) }), 201)).chemical;
+  for (const [cabinet, id] of [['C1', acid.id], ['C2', baseChemical.id], ['G1', gloveOne.id], ['G2', gloveTwo.id]]) {
+    assert((await json(await request(`/chemicals?cabinet=${cabinet}&shelf=1`, alice.cookie))).chemicals.some((item: any) => item.id === id));
+    assert.equal((await request(`/chemicals?cabinet=${cabinet}&shelf=2`, alice.cookie)).status, 400);
+  }
   const acidInA = (await json(await request(`/chemicals/${acid.id}/move`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'A', shelf: 3, version: acid.version }) }))).chemical;
-  const acidBackInC = (await json(await request(`/chemicals/${acid.id}/move`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'C', shelf: 1, version: acidInA.version }) }))).chemical;
-  assert.deepEqual({ cabinet: acidBackInC.cabinet, shelf: acidBackInC.shelf }, { cabinet: 'C', shelf: 1 });
-  console.log('PASS acid cabinet: C1 direct inbound/query, C2 rejection, and bidirectional movement');
+  const acidBackInC = (await json(await request(`/chemicals/${acid.id}/move`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ cabinet: 'C1', shelf: 1, version: acidInA.version }) }))).chemical;
+  assert.deepEqual({ cabinet: acidBackInC.cabinet, shelf: acidBackInC.shelf }, { cabinet: 'C1', shelf: 1 });
+  console.log('PASS storage locations: legacy C rejected; C1/C2/G1/G2 direct inbound/query; illegal single-location shelves rejected; A↔C1 movement');
 
-  assert.equal((await request('/inbound-requests', alice.cookie, { method: 'POST', body: JSON.stringify({ targetUserId: bob.user.id, name: '错误代入库酸', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 2 }) })).status, 400);
-  const pendingEvent = event(aliceSocket, 'inbound-request:changed'); const proxy = await createInboundRequest(alice.cookie, bob.user.id, '验收代入库盐酸', 'C', 1);
+  assert.equal((await request('/inbound-requests', alice.cookie, { method: 'POST', body: JSON.stringify({ targetUserId: bob.user.id, name: '错误代入库碱', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C2', shelf: 2 }) })).status, 400);
+  const pendingEvent = event(aliceSocket, 'inbound-request:changed'); const proxy = await createInboundRequest(alice.cookie, bob.user.id, '验收代入库盐酸', 'C1', 1, ' 7647-01-0 ');
   assert.equal((await pendingEvent).status, 'pending'); assert.equal((await json(await request('/chemicals?search=验收代入库盐酸', alice.cookie))).chemicals.length, 0);
+  assert.equal(proxy.casNumber, '7647-01-0');
   assert((await json(await request('/inbound-requests?scope=mine', alice.cookie))).requests.some((item: any) => item.id === proxy.id));
   assert((await json(await request('/inbound-requests?scope=incoming', bob.cookie))).requests.some((item: any) => item.id === proxy.id));
   assert.equal((await request(`/inbound-requests/${proxy.id}/decision`, teacher.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: proxy.version }) })).status, 403);
@@ -206,7 +230,7 @@ try {
   const approvedProxy = await json(await request(`/inbound-requests/${proxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', comment: '验收同意', version: proxy.version }) }));
   assert.equal((await approvedEvent).status, 'approved'); assert.equal((await proxyChemicalEvent).id, approvedProxy.chemical.id);
   assert.equal(approvedProxy.chemical.owner.id, bob.user.id); assert.equal(approvedProxy.chemical.inboundOperator.id, alice.user.id);
-  assert.deepEqual({ cabinet: approvedProxy.chemical.cabinet, shelf: approvedProxy.chemical.shelf }, { cabinet: 'C', shelf: 1 });
+  assert.deepEqual({ cabinet: approvedProxy.chemical.cabinet, shelf: approvedProxy.chemical.shelf, casNumber: approvedProxy.chemical.casNumber }, { cabinet: 'C1', shelf: 1, casNumber: '7647-01-0' });
   assert.equal((await request(`/inbound-requests/${proxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'approved', version: approvedProxy.request.version }) })).status, 409);
   const rejectableProxy = await createInboundRequest(alice.cookie, bob.user.id, '验收拒绝代入库');
   const rejectedProxy = (await json(await request(`/inbound-requests/${rejectableProxy.id}/decision`, bob.cookie, { method: 'POST', body: JSON.stringify({ decision: 'rejected', comment: '验收拒绝', version: rejectableProxy.version }) }))).request;
@@ -214,7 +238,7 @@ try {
   const withdrawnProxy = (await json(await request(`/inbound-requests/${withdrawableProxy.id}/withdraw`, alice.cookie, { method: 'POST', body: JSON.stringify({ version: withdrawableProxy.version }) }))).request;
   assert.equal(rejectedProxy.status, 'rejected'); assert.equal(withdrawnProxy.status, 'withdrawn');
   assert.equal((await json(await request('/chemicals?search=验收拒绝代入库', alice.cookie))).chemicals.length, 0); assert.equal((await json(await request('/chemicals?search=验收撤销代入库', alice.cookie))).chemicals.length, 0);
-  console.log('PASS proxy inbound: C1 approval, C2 rejection, pending scopes, authorization/version conflicts, reject/withdraw, realtime');
+  console.log('PASS proxy inbound: normalized CAS retained through C1 approval, C2 shelf rejection, pending scopes, authorization/version conflicts, reject/withdraw, realtime');
 
   const normal = await createPurchase(alice.cookie, '普通试剂', 'normal'); const urgent = await createPurchase(alice.cookie, '加急试剂', 'urgent');
   const dangerous = await createPurchase(alice.cookie, '叠氮化钠', 'normal', true); const dangerousUrgent = await createPurchase(alice.cookie, '加急危险试剂', 'urgent', true); const rejectable = await createPurchase(bob.cookie, '驳回试剂', 'normal');
@@ -415,7 +439,7 @@ try {
   assert.equal((await request('/auth/me', hazard.cookie)).status, 401); assert.deepEqual(system.db.prepare('PRAGMA foreign_key_check').all(), []);
   console.log('PASS account deletion: guards, cleanup, random tombstone, safe realtime/disconnect, username reuse, history/FK retention, demo/non-demo, concurrent idempotence');
 
-  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4); assert(logs.some((log: any) => log.action === 'account_deleted'));
+  const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4); assert(logs.some((log: any) => log.action === 'account_deleted')); assert(logs.every((log: any) => !('details' in log)));
   console.log(`ACCEPTANCE OK (${logs.length} audit entries verified)`);
 } finally {
   for (const socket of sockets) socket.close(); await system.close();

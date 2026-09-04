@@ -54,8 +54,11 @@ describe('self-service member registration', () => {
 
     const audits = await api(ctx.base, cookie, '/api/audit-logs');
     const audit = (await audits.json()).logs.find((item: any) => item.action === 'account_register' && item.objectId === String(body.user.id));
-    expect(audit).toMatchObject({ actor: { id: body.user.id }, summary: '新成员注册：new.member', details: { username: 'new.member', role: 'member' } });
-    expect(JSON.stringify(audit.details)).not.toContain(validRegistration.password);
+    expect(audit).toMatchObject({ actor: { id: body.user.id }, summary: '新成员注册：new.member' });
+    expect(audit).not.toHaveProperty('details');
+    const storedAudit = ctx.system.db.prepare(`SELECT details_json FROM audit_logs WHERE action='account_register' AND object_id=?`).get(String(body.user.id)) as { details_json: string };
+    expect(JSON.parse(storedAudit.details_json)).toMatchObject({ username: 'new.member', role: 'member' });
+    expect(storedAudit.details_json).not.toContain(validRegistration.password);
 
     const notification = ctx.system.db.prepare(`SELECT n.* FROM notifications n JOIN users u ON u.id=n.user_id
       WHERE u.username='teacher' AND n.category='account' AND n.object_type='user' AND n.object_id=?`).get(String(body.user.id)) as Record<string, unknown>;

@@ -7,7 +7,7 @@ import { isPurchaseListMode, procurementTaskPath, purchaseRequestPath, purchaseT
 import { filterNotifications, notificationCategoryName, notificationCategoryOptions, notificationReadOptions, type NotificationCategoryFilter, type NotificationReadFilter } from './notification-filter.js';
 import { purchaseStatusOptions } from './purchase-status.js';
 import { ProcurementTypeFilter, PurchaseTable, type PurchaseAction } from './purchase-tasks-ui.js';
-import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
+import { buildDirectInboundPayload, buildMovePayload, CabinetOptions, CasNumberField, InboundOwnerDisplay, locationAfterCabinetChange, ShelfSelect } from './inventory-forms.js';
 import { buildProxyInboundPayload, InboundModeControls, InboundRequestActions, ProxyInboundLaunchers, ProxyInboundQueueModal, type ProxyInboundQueueScope } from './inbound-requests-ui.js';
 import { RoleOptions, roleLabel } from './role-labels.js';
 import { choosePurchaseWeek, purchaseWeekCatalogPath, PurchaseWeekPanel, shouldShowPurchaseWeekPanel } from './purchase-weekly-ui.js';
@@ -16,6 +16,7 @@ import { PurchaseActionDialog } from './purchase-action-dialog.js';
 import { AccountActionDialog, AccountRowActions, type AccountDialogAction } from './account-action-dialog.js';
 import { canReviewPasswordResetRequests, PasswordResetDecisionDialog, PasswordResetQueue, type PasswordResetDecision } from './password-reset-admin-ui.js';
 import { createLatestInventoryRequestGate, planInventoryRequests, scheduleInventorySearch } from './inventory-requests.js';
+import { ChemicalCorrectionDialog, canCorrectChemical, replaceCorrectedChemical } from './chemical-correction-dialog.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
@@ -24,6 +25,7 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
   const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState(''); const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
   const [discarding, setDiscarding] = useState<Chemical | null>(null); const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: InboundRequestDialogAction } | null>(null);
+  const [correcting, setCorrecting] = useState<Chemical | null>(null);
   const chemicalRequests = useRef(createLatestInventoryRequestGate()); const supportingRequests = useRef(createLatestInventoryRequestGate());
   useEffect(() => {
     chemicalRequests.current.cancel();
@@ -50,12 +52,13 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
   }, [revision]);
   function decide(request: InboundRequest, decision: 'approved' | 'rejected') { setProxyQueue(null); setInboundAction({ request, action: decision }); }
   function withdraw(request: InboundRequest) { setProxyQueue(null); setInboundAction({ request, action: 'withdraw' }); }
-  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层，C 酸柜为单层。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
-    <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
+  return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层；C1/C2 与两台手套箱为独立单层位置。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
+    <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / CAS / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
     {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={setSelected} />
     {proxyQueue && <ProxyInboundQueueModal scope={proxyQueue} requests={proxyQueue === 'incoming' ? incoming : mine} onClose={() => setProxyQueue(null)} onDecision={decide} onWithdraw={withdraw} />}
     {showInbound && <InboundModal user={user} members={members} onClose={() => setShowInbound(false)} onDone={(message) => { setShowInbound(false); setSuccess(message ?? '入库成功'); onChanged(); }} />}
-    {selected && <ChemicalModal chemical={selected} onClose={() => setSelected(null)} onDiscard={() => { setDiscarding(selected); setSelected(null); }} onDone={() => { setSelected(null); onChanged(); }} />}
+    {selected && <ChemicalModal user={user} chemical={selected} onClose={() => setSelected(null)} onCorrect={() => { setCorrecting(selected); setSelected(null); }} onDiscard={() => { setDiscarding(selected); setSelected(null); }} onDone={() => { setSelected(null); onChanged(); }} />}
+    {correcting && <ChemicalCorrectionDialog chemical={correcting} onClose={() => setCorrecting(null)} onDone={(corrected) => { setChemicals((current) => replaceCorrectedChemical(current, corrected)); setCorrecting(null); setSuccess('药品信息已更正'); onChanged(); }} />}
     {discarding && <ChemicalDiscardDialog chemical={discarding} onClose={() => setDiscarding(null)} onDone={() => { setDiscarding(null); setSuccess('药品已废弃'); onChanged(); }} />}
     {inboundAction && <InboundRequestActionDialog request={inboundAction.request} action={inboundAction.action} onClose={() => setInboundAction(null)} onDone={() => { setInboundAction(null); onChanged(); }} />}
   </>;
@@ -68,12 +71,12 @@ function InboundModal({ user, members, onClose, onDone }: { user: UserView; memb
     event.preventDefault(); setBusy(true); setError(''); const data = new FormData(event.currentTarget);
     try {
       const date = new Date(String(data.get('inboundAt'))); if (Number.isNaN(date.getTime())) throw new Error('入库时间无效');
-      const fields = { name: data.get('name'), specification: data.get('specification'), inboundAt: date.toISOString(), cabinet, shelf };
+      const fields = { name: data.get('name'), specification: data.get('specification'), casNumber: data.get('casNumber'), inboundAt: date.toISOString(), cabinet, shelf };
       if (proxyMode) { const payload = buildProxyInboundPayload(fields, targetUserId); await api('/inbound-requests', { method: 'POST', body: JSON.stringify(payload) }); const target = members.find((member) => member.id === payload.targetUserId); onDone(`已发送给 ${target?.displayName ?? '对方'}，等待对方同意`); }
       else { await api('/chemicals', { method: 'POST', body: JSON.stringify(buildDirectInboundPayload(fields)) }); onDone(); }
     } catch (reason) { setError(reason instanceof Error ? reason.message : messageOf(reason)); } finally { setBusy(false); }
   }}>
-    <label>药品名称<input name="name" required autoFocus /></label><label>规格<input name="specification" required /></label>
+    <label>药品名称<input name="name" required autoFocus /></label><label>规格<input name="specification" required /></label><CasNumberField />
     <InboundOwnerDisplay displayName={user.displayName} />
     <label>入库时间<input name="inboundAt" type="datetime-local" required defaultValue={new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16)} /></label>
     <label>柜号<select name="cabinet" value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select></label>
@@ -82,12 +85,12 @@ function InboundModal({ user, members, onClose, onDone }: { user: UserView; memb
   </form></Modal>;
 }
 
-function ChemicalModal({ chemical, onClose, onDiscard, onDone }: { chemical: Chemical; onClose: () => void; onDiscard: () => void; onDone: () => void }) {
+export function ChemicalModal({ user, chemical, onClose, onCorrect, onDiscard, onDone }: { user: UserView; chemical: Chemical; onClose: () => void; onCorrect: () => void; onDiscard: () => void; onDone: () => void }) {
   const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [cabinet, setCabinet] = useState(chemical.cabinet); const [shelf, setShelf] = useState(String(chemical.shelf));
   async function move() { setError(''); let payload; try { payload = buildMovePayload(cabinet, shelf, chemical.version); } catch (reason) { setError(reason instanceof Error ? reason.message : '调动参数无效'); return; } setBusy(true); try { await api(`/chemicals/${chemical.id}/move`, { method: 'PATCH', body: JSON.stringify(payload) }); onDone(); } catch (reason) { setError(messageOf(reason)); } finally { setBusy(false); } }
-  return <Modal title={chemical.name} onClose={onClose}><dl className="details"><dt>规格</dt><dd>{chemical.specification}</dd><dt>归属人</dt><dd>{chemical.owner.displayName}</dd><dt>入库操作</dt><dd>{chemical.inboundOperator.displayName}</dd><dt>入库时间</dt><dd>{formatTime(chemical.inboundAt)}</dd><dt>当前位置</dt><dd>{chemical.cabinet} 柜 {chemical.shelf} 层</dd><dt>版本</dt><dd>{chemical.version}</dd></dl>
+  return <Modal title={chemical.name} onClose={onClose}><dl className="details"><dt>规格</dt><dd>{chemical.specification}</dd><dt>CAS号</dt><dd>{chemical.casNumber ?? '未填写'}</dd><dt>归属人</dt><dd>{chemical.owner.displayName}</dd><dt>入库操作</dt><dd>{chemical.inboundOperator.displayName}</dd><dt>入库时间</dt><dd>{formatTime(chemical.inboundAt)}</dd><dt>当前位置</dt><dd>{chemical.cabinet} 柜 {chemical.shelf} 层</dd><dt>版本</dt><dd>{chemical.version}</dd></dl>
     <fieldset><legend>调动位置</legend><div className="inline-fields"><select value={cabinet} onChange={(event) => { const location = locationAfterCabinetChange(event.target.value, shelf); setCabinet(location.cabinet); setShelf(location.shelf); }}><CabinetOptions /></select><ShelfSelect cabinet={cabinet} value={shelf} onChange={setShelf} /><button type="button" className="primary" disabled={busy} onClick={move}>调动</button></div></fieldset>
-    {error && <Status kind="error">{error}</Status>}<div className="danger-zone"><button type="button" className="danger" disabled={busy} onClick={onDiscard}>废弃药品</button></div>
+    {error && <Status kind="error">{error}</Status>}<div className="detail-actions">{canCorrectChemical(user, chemical) && <button type="button" disabled={busy} onClick={onCorrect}>更正信息</button>}<button type="button" className="danger" disabled={busy} onClick={onDiscard}>废弃药品</button></div>
   </Modal>;
 }
 

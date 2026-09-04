@@ -43,17 +43,21 @@ describe('front-end critical behavior', () => {
     }
   });
 
-  it('renders A/B then the single-shelf acid cabinet with 11 ordered, clickable shelves', () => {
+  it('renders A/B and four independent single-location cabinets with 14 ordered, clickable shelves', () => {
     const html = renderToStaticMarkup(<CabinetBoard chemicals={[{
-      id: 1, name: '乙醇', specification: 'AR', cabinet: 'A', shelf: 1, status: 'active', version: 1,
+      id: 1, name: '乙醇', specification: 'AR', casNumber: null, cabinet: 'A', shelf: 1, status: 'active', version: 1,
       owner: { id: 4, username: 'member-a', displayName: '成员甲' }, inboundOperator: { id: 4, username: 'member-a', displayName: '成员甲' },
       inboundAt: '', createdAt: '', updatedAt: '', discardReason: null,
     }]} onChemical={() => undefined} />);
-    expect((html.match(/data-shelf=/g) ?? [])).toHaveLength(11);
-    expect(html).toContain('A · 常温柜'); expect(html).toContain('B · 冷藏柜'); expect(html).toContain('C · 酸柜');
-    expect(html).toContain('单层 · 仅酸性物质'); expect(html).toContain('乙醇');
+    expect((html.match(/data-shelf=/g) ?? [])).toHaveLength(14);
+    expect(html).toContain('A · 常温柜'); expect(html).toContain('B · 冷藏柜'); expect(html).toContain('C1 · 酸柜'); expect(html).toContain('C2 · 碱柜');
+    expect(html).toContain('G1 · 高效液相色谱旁手套箱'); expect(html).toContain('G2 · 靠墙手套箱');
+    expect(html).toContain('仅允许已确认的酸性物质'); expect(html).toContain('仅允许已确认的碱性物质'); expect(html).toContain('乙醇');
     expect(html.indexOf('A · 常温柜')).toBeLessThan(html.indexOf('B · 冷藏柜'));
-    expect(html.indexOf('B · 冷藏柜')).toBeLessThan(html.indexOf('C · 酸柜'));
+    expect(html.indexOf('B · 冷藏柜')).toBeLessThan(html.indexOf('C1 · 酸柜'));
+    expect(html.indexOf('C1 · 酸柜')).toBeLessThan(html.indexOf('C2 · 碱柜'));
+    expect(html.indexOf('C2 · 碱柜')).toBeLessThan(html.indexOf('G1 · 高效液相色谱旁手套箱'));
+    expect(html.indexOf('G1 · 高效液相色谱旁手套箱')).toBeLessThan(html.indexOf('G2 · 靠墙手套箱'));
     expect(html.indexOf('data-shelf="1"')).toBeLessThan(html.indexOf('data-shelf="5"'));
   });
 

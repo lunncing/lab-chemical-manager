@@ -12,7 +12,7 @@ export function insertAudit(db: Db, input: AuditInput, now = new Date().toISOStr
 
 export function mapAudit(row: Record<string, unknown>) {
   return { id: Number(row.id), actor: { id: Number(row.actor_id), username: String(row.actor_username), displayName: String(row.actor_name) }, action: String(row.action),
-    objectType: String(row.object_type), objectId: String(row.object_id), summary: String(row.summary), details: JSON.parse(String(row.details_json)), createdAt: String(row.created_at) };
+    objectType: String(row.object_type), objectId: String(row.object_id), summary: String(row.summary), createdAt: String(row.created_at) };
 }
 
 interface NotifyInput { userIds: number[]; category: NotificationCategory; title: string; body: string; objectType?: string; objectId?: string | number; }

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
-import { migrateAcidCabinetTables } from '../src/cabinet-migration.js';
+import { migrateStorageLocationsAndCas } from '../src/cabinet-migration.js';
 import { openDatabase } from '../src/database.js';
 
 const directories: string[] = [];
@@ -65,7 +65,8 @@ function snapshot(db: DatabaseSync) {
   const tables = (db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'
     AND name NOT IN ('registration_invites','password_reset_requests') ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name);
   return Object.fromEntries(tables.map((table) => {
-    const columns = table === 'users' ? 'id,username,display_name,role,password_hash,active,demo,version,created_at,updated_at' : '*';
+    const businessColumns = (db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map(({ name }) => name).filter((name) => name !== 'cas_number');
+    const columns = table === 'users' ? 'id,username,display_name,role,password_hash,active,demo,version,created_at,updated_at' : businessColumns.map((name) => `"${name}"`).join(',');
     const rows = db.prepare(`SELECT ${columns} FROM "${table}" ORDER BY rowid`).all();
     return [table, { count: rows.length, sha256: createHash('sha256').update(JSON.stringify(rows)).digest('hex') }];
   }));
@@ -75,22 +76,25 @@ function tempPath(): string {
   const directory = mkdtempSync(join(tmpdir(), 'lab-acid-cabinet-')); directories.push(directory); return join(directory, 'v1.4.sqlite');
 }
 
-describe('V1.4 acid cabinet table rebuild migration', () => {
-  it('preserves every legacy business row/FK/index and is idempotent while enabling C1 only', () => {
+describe('V1.4 A/B-only direct V1.9 migration', () => {
+  it('preserves every legacy business value/FK/index and is idempotent while adding null CAS and all new locations', () => {
     const path = tempPath(); let db = createV14(path); const before = snapshot(db); db.close();
 
     db = openDatabase(path, false); databases.push(db);
     expect(snapshot(db)).toEqual(before);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
     expect((db.prepare(`SELECT name FROM sqlite_master WHERE type='index' AND tbl_name IN ('chemicals','inbound_requests') ORDER BY name`).all() as Array<{ name: string }>).map(({ name }) => name)).toEqual([
-      'idx_chemicals_location', 'idx_chemicals_owner_custom', 'idx_inbound_requests_requester_status', 'idx_inbound_requests_target_status',
+      'idx_chemicals_cas_number', 'idx_chemicals_location', 'idx_chemicals_owner_custom', 'idx_inbound_requests_requester_status', 'idx_inbound_requests_target_status',
     ]);
-    expect(db.prepare('SELECT id,version,created_at,updated_at FROM chemicals WHERE id=41').get()).toEqual({ id: 41, version: 9, created_at: '2026-08-20T01:02:03.456Z', updated_at: '2026-08-20T01:02:03.456Z' });
-    expect(db.prepare('SELECT id,chemical_id,version,decided_at FROM inbound_requests WHERE id=71').get()).toEqual({ id: 71, chemical_id: 41, version: 8, decided_at: '2026-08-20T01:02:03.456Z' });
+    expect(db.prepare('SELECT id,cas_number,version,created_at,updated_at FROM chemicals WHERE id=41').get()).toEqual({ id: 41, cas_number: null, version: 9, created_at: '2026-08-20T01:02:03.456Z', updated_at: '2026-08-20T01:02:03.456Z' });
+    expect(db.prepare('SELECT id,cas_number,chemical_id,version,decided_at FROM inbound_requests WHERE id=71').get()).toEqual({ id: 71, cas_number: null, chemical_id: 41, version: 8, decided_at: '2026-08-20T01:02:03.456Z' });
 
-    db.prepare(`INSERT INTO chemicals (id,name,specification,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at) VALUES (42,'盐酸','AR',11,11,'2026-08-30T00:00:00.000Z','C',1,'active','2026-08-30T00:00:00.000Z','2026-08-30T00:00:00.000Z')`).run();
-    expect(() => db.prepare(`INSERT INTO chemicals (id,name,specification,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at) VALUES (43,'错误酸柜','AR',11,11,'2026-08-30T00:00:00.000Z','C',2,'active','2026-08-30T00:00:00.000Z','2026-08-30T00:00:00.000Z')`).run()).toThrow();
-    expect(() => db.prepare(`INSERT INTO inbound_requests (id,requester_id,target_user_id,name,specification,inbound_at,cabinet,shelf,status,created_at,updated_at) VALUES (72,11,12,'错误申请','AR','2026-08-30T00:00:00.000Z','C',2,'pending','2026-08-30T00:00:00.000Z','2026-08-30T00:00:00.000Z')`).run()).toThrow();
+    const insert = db.prepare(`INSERT INTO chemicals (id,name,specification,owner_id,inbound_operator_id,inbound_at,cabinet,shelf,status,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,'active',?,?)`);
+    for (const [id, cabinet] of [[42, 'C1'], [43, 'C2'], [44, 'G1'], [45, 'G2']] as const) insert.run(id, `新位置-${cabinet}`, 'AR', 11, 11, '2026-08-30T00:00:00.000Z', cabinet, 1, '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z');
+    expect(() => insert.run(46, '错误碱柜', 'AR', 11, 11, '2026-08-30T00:00:00.000Z', 'C2', 2, '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z')).toThrow();
+    expect(() => insert.run(47, '旧柜号', 'AR', 11, 11, '2026-08-30T00:00:00.000Z', 'C', 1, '2026-08-30T00:00:00.000Z', '2026-08-30T00:00:00.000Z')).toThrow();
+    expect(() => db.prepare(`INSERT INTO inbound_requests (id,requester_id,target_user_id,name,specification,inbound_at,cabinet,shelf,status,created_at,updated_at) VALUES (72,11,12,'错误申请','AR','2026-08-30T00:00:00.000Z','G1',2,'pending','2026-08-30T00:00:00.000Z','2026-08-30T00:00:00.000Z')`).run()).toThrow();
     const firstSchema = db.prepare(`SELECT name,sql FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name`).all();
     const afterFirstOpen = snapshot(db); db.close();
 
@@ -98,14 +102,19 @@ describe('V1.4 acid cabinet table rebuild migration', () => {
     expect(db.prepare(`SELECT name,sql FROM sqlite_master WHERE type IN ('table','index') ORDER BY type,name`).all()).toEqual(firstSchema);
     expect(snapshot(db)).toEqual(afterFirstOpen);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    db.close();
+    db = openDatabase(path, false); databases.push(db);
+    expect(snapshot(db)).toEqual(afterFirstOpen);
+    expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
+    expect(db.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' });
   });
 
   it('rolls back fully, restores foreign keys, and leaves no temporary tables on a failed check', () => {
     const path = tempPath(); const db = createV14(path, true); databases.push(db); const before = snapshot(db);
-    expect(() => migrateAcidCabinetTables(db)).toThrow(/foreign key/i);
+    expect(() => migrateStorageLocationsAndCas(db)).toThrow(/foreign key/i);
     expect(snapshot(db)).toEqual(before);
     expect((db.prepare('PRAGMA foreign_keys').get() as { foreign_keys: number }).foreign_keys).toBe(1);
-    expect(db.prepare(`SELECT name FROM sqlite_master WHERE name LIKE '%v15%'`).all()).toEqual([]);
+    expect(db.prepare(`SELECT name FROM sqlite_master WHERE name LIKE '%v19%'`).all()).toEqual([]);
     expect((db.prepare(`SELECT sql FROM sqlite_master WHERE type='table' AND name='chemicals'`).get() as { sql: string }).sql).toContain("cabinet IN ('A','B')");
   });
 });

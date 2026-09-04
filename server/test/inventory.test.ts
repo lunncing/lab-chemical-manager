@@ -9,34 +9,34 @@ describe('inventory vertical slice', () => {
   it('supports C1 direct inbound, strict C queries, and bidirectional A/B to C moves', async () => {
     const alice = await login(ctx.base, 'member-a'); const bob = await login(ctx.base, 'member-b');
     const acidResponse = await api(ctx.base, alice, '/api/chemicals', { method: 'POST', body: JSON.stringify({
-      name: '盐酸', specification: 'AR 500mL', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: 1,
+      name: '盐酸', specification: 'AR 500mL', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C1', shelf: 1,
     }) });
     expect(acidResponse.status).toBe(201);
     const acid = (await acidResponse.json()).chemical;
-    expect(acid).toMatchObject({ cabinet: 'C', shelf: 1 });
+    expect(acid).toMatchObject({ cabinet: 'C1', shelf: 1 });
 
     const invalidAcid = await api(ctx.base, alice, '/api/chemicals', { method: 'POST', body: JSON.stringify({
-      name: '错误盐酸', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C', shelf: 2,
+      name: '错误盐酸', specification: 'AR', inboundAt: '2026-08-30T08:00:00.000Z', cabinet: 'C1', shelf: 2,
     }) });
     expect(invalidAcid.status).toBe(400);
-    expect((await invalidAcid.json()).error.message).toContain('C 柜仅允许第 1 层');
+    expect((await invalidAcid.json()).error.message).toContain('C1 仅允许第 1 层');
 
-    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C')).status).toBe(200);
-    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C&shelf=1')).status).toBe(200);
-    const invalidQuery = await api(ctx.base, alice, '/api/chemicals?cabinet=C&shelf=2');
-    expect(invalidQuery.status).toBe(400); expect((await invalidQuery.json()).error.message).toContain('C 柜仅允许第 1 层');
+    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C1')).status).toBe(200);
+    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C1&shelf=1')).status).toBe(200);
+    const invalidQuery = await api(ctx.base, alice, '/api/chemicals?cabinet=C1&shelf=2');
+    expect(invalidQuery.status).toBe(400); expect((await invalidQuery.json()).error.message).toContain('C1 仅允许第 1 层');
     expect((await api(ctx.base, alice, '/api/chemicals?cabinet=D')).status).toBe(400);
-    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C&unexpected=1')).status).toBe(400);
+    expect((await api(ctx.base, alice, '/api/chemicals?cabinet=C1&unexpected=1')).status).toBe(400);
 
     const toA = await api(ctx.base, bob, `/api/chemicals/${acid.id}/move`, { method: 'PATCH', body: JSON.stringify({ cabinet: 'A', shelf: 5, version: acid.version }) });
     expect(toA.status).toBe(200); const movedToA = (await toA.json()).chemical;
-    const toC = await api(ctx.base, bob, `/api/chemicals/${acid.id}/move`, { method: 'PATCH', body: JSON.stringify({ cabinet: 'C', shelf: 1, version: movedToA.version }) });
-    expect(toC.status).toBe(200); expect((await toC.json()).chemical).toMatchObject({ cabinet: 'C', shelf: 1, version: 3 });
+    const toC = await api(ctx.base, bob, `/api/chemicals/${acid.id}/move`, { method: 'PATCH', body: JSON.stringify({ cabinet: 'C1', shelf: 1, version: movedToA.version }) });
+    expect(toC.status).toBe(200); expect((await toC.json()).chemical).toMatchObject({ cabinet: 'C1', shelf: 1, version: 3 });
 
     const logs = (await (await api(ctx.base, alice, '/api/audit-logs')).json()).logs as Array<{ summary: string }>;
-    expect(logs.some(({ summary }) => summary.includes('C 柜 1 层'))).toBe(true);
+    expect(logs.some(({ summary }) => summary.includes('C1 柜 1 层'))).toBe(true);
     const messages = (await (await api(ctx.base, alice, '/api/notifications')).json()).notifications as Array<{ body: string }>;
-    expect(messages.some(({ body }) => body.includes('C 柜 1 层'))).toBe(true);
+    expect(messages.some(({ body }) => body.includes('C1 柜 1 层'))).toBe(true);
   });
 
   it('persists inbound stock in its shelf with atomic audit and routed messages', async () => {

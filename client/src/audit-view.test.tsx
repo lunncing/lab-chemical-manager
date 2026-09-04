@@ -5,7 +5,7 @@ import type { AuditLog } from './types.js';
 
 describe('audit log display', () => {
   it('keeps the public evidence summary but omits structured details from production DOM', () => {
-    const log: AuditLog = {
+    const log: AuditLog & { details: { secretEvidence: string } } = {
       id: 1,
       actor: { id: 4, username: 'member-a', displayName: '成员甲' },
       action: 'chemical_inbound',
