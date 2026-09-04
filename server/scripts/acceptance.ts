@@ -181,16 +181,24 @@ try {
   assert.equal((await firstRealtime).id, inbound.id); assert.equal((await secondRealtime).id, inbound.id);
   assert.equal(inbound.casNumber, '64-17-5');
   assert((await json(await request('/chemicals?search=64-17-5', alice.cookie))).chemicals.some((item: any) => item.id === inbound.id));
-  assert.equal((await request(`/chemicals/${inbound.id}/details`, alice.cookie, { method: 'PATCH', body: JSON.stringify({ name: '越权更正', version: inbound.version }) })).status, 403);
-  assert.equal((await request(`/chemicals/${inbound.id}/details`, admin.cookie, { method: 'PATCH', body: JSON.stringify({ name: '角色越权更正', version: inbound.version }) })).status, 403);
-  assert.equal((await request(`/chemicals/${inbound.id}/details`, hazard.cookie, { method: 'PATCH', body: JSON.stringify({ name: '危险采购越权更正', version: inbound.version }) })).status, 403);
+  assert.equal((await request(`/chemicals/${inbound.id}/details`, undefined, { method: 'PATCH', body: JSON.stringify({ name: '未登录更正', version: inbound.version }) })).status, 401);
+  let roleCorrected = inbound;
+  for (const [session, name] of [[alice, '验收乙醇（成员更正）'], [admin, '验收乙醇（普通管理员更正）'], [hazard, '验收乙醇（危险品采购人更正）']] as const) {
+    roleCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, session.cookie, { method: 'PATCH', body: JSON.stringify({ name, version: roleCorrected.version }) }))).chemical;
+    assert.equal(roleCorrected.name, name);
+    const auditActor = system.db.prepare(`SELECT u.username FROM audit_logs a JOIN users u ON u.id=a.actor_id
+      WHERE a.action='inventory_details_corrected' AND a.object_id=? ORDER BY a.id DESC LIMIT 1`).get(String(inbound.id)) as { username: string };
+    assert.equal(auditActor.username, session.user.username);
+  }
   const correctedAlice = event(aliceSocket, 'chemical:changed'); const correctedBob = event(bobSocket, 'chemical:changed'); const correctionAuditEvent = event(aliceSocket, 'audit:created');
-  const ownerCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '验收乙醇（更正）', version: inbound.version }) }))).chemical;
+  const ownerCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '验收乙醇（更正）', version: roleCorrected.version }) }))).chemical;
   assert.equal((await correctedAlice).name, '验收乙醇（更正）'); assert.equal((await correctedBob).name, '验收乙醇（更正）');
   const publicCorrectionAudit = await correctionAuditEvent;
   assert.equal(publicCorrectionAudit.summary, '更正药品信息：验收乙醇（更正）（名称）'); assert.equal('details' in publicCorrectionAudit, false);
-  const storedCorrection = system.db.prepare(`SELECT summary,details_json FROM audit_logs WHERE action='inventory_details_corrected' AND object_id=?`).get(String(inbound.id)) as { summary: string; details_json: string };
-  assert.deepEqual(JSON.parse(storedCorrection.details_json), { before: { name: '验收乙醇' }, after: { name: '验收乙醇（更正）' } });
+  const storedCorrection = system.db.prepare(`SELECT a.summary,a.details_json,u.username actor_username FROM audit_logs a JOIN users u ON u.id=a.actor_id
+    WHERE a.action='inventory_details_corrected' AND a.object_id=? ORDER BY a.id DESC LIMIT 1`).get(String(inbound.id)) as { summary: string; details_json: string; actor_username: string };
+  assert.equal(storedCorrection.actor_username, 'member-b');
+  assert.deepEqual(JSON.parse(storedCorrection.details_json), { before: { name: '验收乙醇（危险品采购人更正）' }, after: { name: '验收乙醇（更正）' } });
   assert.equal((await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '验收乙醇（更正）', version: ownerCorrected.version }) })).status, 400);
   assert.equal((await request(`/chemicals/${inbound.id}/details`, bob.cookie, { method: 'PATCH', body: JSON.stringify({ name: '旧版本更正', version: inbound.version }) })).status, 409);
   const superCorrected = (await json(await request(`/chemicals/${inbound.id}/details`, teacher.cookie, { method: 'PATCH', body: JSON.stringify({ specification: 'AR 1L', version: ownerCorrected.version }) }))).chemical;
@@ -201,7 +209,7 @@ try {
   assert.equal(discarded.status, 'discarded'); assert.equal((await json(await request('/chemicals?cabinet=B&shelf=4', alice.cookie))).chemicals.length, 0);
   assert.equal((await request(`/chemicals/${inbound.id}/details`, teacher.cookie, { method: 'PATCH', body: JSON.stringify({ name: '废弃后更正', version: discarded.version }) })).status, 409);
   assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '越权归属', specification: '1 瓶', ownerId: bob.user.id, inboundAt: new Date().toISOString(), cabinet: 'A', shelf: 2 }) })).status, 400);
-  console.log('PASS inventory/realtime/correction: CAS inbound/search, owner/super authorization, strict state/version/no-op guards, structured private audit, summary-only public audit, cross-owner move, discard, two clients');
+  console.log('PASS inventory/realtime/correction: CAS inbound/search, all-role active A1 correction, actual audit actors, auth/state/version/no-op guards, structured private audit, summary-only public audit, cross-owner move, discard, two clients');
 
   assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '旧柜号', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C', shelf: 1 }) })).status, 400);
   assert.equal((await request('/chemicals', alice.cookie, { method: 'POST', body: JSON.stringify({ name: '错误碱柜', specification: 'AR', inboundAt: new Date().toISOString(), cabinet: 'C2', shelf: 2 }) })).status, 400);
@@ -368,8 +376,13 @@ try {
   const historyChemical = (await json(await request('/chemicals', candidateSession.cookie, { method: 'POST', body: JSON.stringify({
     name: '删除验收历史药品', specification: 'AR 1 瓶', inboundAt: new Date().toISOString(), cabinet: 'B', shelf: 1,
   }) }), 201)).chemical;
+  const movedHistoryChemical = (await json(await request(`/chemicals/${historyChemical.id}/move`, candidateSession.cookie, {
+    method: 'PATCH', body: JSON.stringify({ cabinet: 'B', shelf: 2, version: historyChemical.version }),
+  }))).chemical;
+  assert.equal(movedHistoryChemical.version, historyChemical.version + 1);
   const historyPurchase = await createPurchase(candidateSession.cookie, '删除验收历史采购', 'normal');
   const historyInbound = await createInboundRequest(candidateSession.cookie, bob.user.id, '删除验收历史代入库');
+  const historyInboundToCandidate = await createInboundRequest(bob.cookie, deletionCandidate.id, '删除验收历史被代入库', 'B', 3);
   const historyCounts = {
     chemicals: (system.db.prepare('SELECT COUNT(*) count FROM chemicals').get() as { count: number }).count,
     movements: (system.db.prepare('SELECT COUNT(*) count FROM inventory_movements').get() as { count: number }).count,
@@ -385,11 +398,12 @@ try {
   const candidateSocket = await connect(candidateSession.cookie);
   const changedEvent = event(aliceSocket, 'user:changed'); const disconnectEvent = event(candidateSocket, 'disconnect');
   const deleted = await json(await request(`/users/${deletionCandidate.id}`, teacher.cookie, { method: 'DELETE' }));
-  assert.deepEqual(deleted, { deleted: { id: deletionCandidate.id, mode: 'anonymized' } });
+  assert.deepEqual(deleted, { deleted: { id: deletionCandidate.id, mode: 'login_identity_removed_display_name_retained' } });
   assert.deepEqual(await changedEvent, deleted.deleted); assert.equal(await disconnectEvent, 'io server disconnect');
   const tombstone = system.db.prepare('SELECT * FROM users WHERE id=?').get(deletionCandidate.id) as Record<string, unknown>;
   assert.match(String(tombstone.username), new RegExp(`^deleted-${deletionCandidate.id}-[A-Za-z0-9_-]+$`));
-  assert.equal(tombstone.display_name, `已删除用户 #${deletionCandidate.id}`); assert.equal(tombstone.role, 'normal_admin');
+  assert.notEqual(tombstone.username, originalCandidate.username); assert.equal(tombstone.display_name, originalCandidate.display_name); assert.equal(tombstone.role, 'normal_admin');
+  assert.notEqual(tombstone.password_hash, originalCandidate.password_hash);
   assert.equal(tombstone.active, 0); assert.equal(tombstone.demo, 0); assert.equal(tombstone.version, Number(originalCandidate.version) + 1);
   assert.equal(verifyPassword('AcceptanceDelete123!', String(tombstone.password_hash)), false); assert(!Number.isNaN(Date.parse(String(tombstone.deleted_at))));
   for (const table of ['sessions', 'notifications', 'notification_preferences']) {
@@ -409,20 +423,28 @@ try {
   assert(!(await json(await request('/members', teacher.cookie))).users.some((user: any) => user.id === deletionCandidate.id));
 
   const deletionAudit = system.db.prepare(`SELECT * FROM audit_logs WHERE action='account_deleted' AND object_id=?`).get(String(deletionCandidate.id)) as Record<string, unknown>;
-  assert.deepEqual(JSON.parse(String(deletionAudit.details_json)), { mode: 'anonymized' });
+  assert.deepEqual(JSON.parse(String(deletionAudit.details_json)), { mode: 'login_identity_removed_display_name_retained' });
   const deletionAuditText = JSON.stringify(deletionAudit);
-  for (const oldPii of [String(originalCandidate.username), String(originalCandidate.display_name), String(originalCandidate.password_hash), 'AcceptanceDelete123!']) assert(!deletionAuditText.includes(oldPii));
+  for (const deletionAuditSecret of [String(originalCandidate.username), String(originalCandidate.display_name), String(originalCandidate.password_hash), 'AcceptanceDelete123!']) assert(!deletionAuditText.includes(deletionAuditSecret));
 
   const reused = await register({ username: 'acceptance-delete', displayName: '验收重用账号', password: 'AcceptanceReused123!', passwordConfirm: 'AcceptanceReused123!', inviteCode: candidateInvite.code });
   assert.equal(reused.response.status, 201); assert.notEqual(reused.user.id, deletionCandidate.id); assert.equal(reused.user.role, 'member');
   assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-delete', password: 'AcceptanceDelete123!' }) })).status, 401);
   assert.equal((await request('/auth/login', undefined, { method: 'POST', body: JSON.stringify({ username: 'acceptance-delete', password: 'AcceptanceReused123!' }) })).status, 200);
-  const anonymous = { id: deletionCandidate.id, username: String(tombstone.username), displayName: `已删除用户 #${deletionCandidate.id}` };
-  assert.deepEqual((await json(await request(`/chemicals/${historyChemical.id}`, teacher.cookie))).chemical.owner, anonymous);
-  assert.deepEqual((await json(await request('/purchases', teacher.cookie))).purchases.find((item: any) => item.id === historyPurchase.id).applicant, anonymous);
-  assert.deepEqual((await json(await request('/inbound-requests?scope=incoming', bob.cookie))).requests.find((item: any) => item.id === historyInbound.id).requester, anonymous);
+  const historicalPerson = { id: deletionCandidate.id, username: String(tombstone.username), displayName: String(originalCandidate.display_name) };
+  const historicalChemical = await json(await request(`/chemicals/${historyChemical.id}`, teacher.cookie));
+  assert.deepEqual(historicalChemical.chemical.owner, historicalPerson); assert.deepEqual(historicalChemical.chemical.inboundOperator, historicalPerson);
+  assert.equal(historicalChemical.movements.length, 2);
+  for (const movement of historicalChemical.movements) {
+    assert.equal(movement.operator_username, tombstone.username); assert.equal(movement.operator_name, originalCandidate.display_name);
+  }
+  assert.deepEqual((await json(await request('/purchases', teacher.cookie))).purchases.find((item: any) => item.id === historyPurchase.id).applicant, historicalPerson);
+  assert.deepEqual((await json(await request('/inbound-requests?scope=incoming', bob.cookie))).requests.find((item: any) => item.id === historyInbound.id).requester, historicalPerson);
+  assert.deepEqual((await json(await request('/inbound-requests?scope=mine', bob.cookie))).requests.find((item: any) => item.id === historyInboundToCandidate.id).targetUser, historicalPerson);
   const historicalInvite = (await json(await request('/registration-invites', teacher.cookie))).invites.find((item: any) => item.id === candidateInvite.id);
-  assert.deepEqual(historicalInvite.creator, anonymous); assert.equal(historicalInvite.usedBy.id, reused.user.id);
+  assert.deepEqual(historicalInvite.creator, historicalPerson); assert.equal(historicalInvite.usedBy.id, reused.user.id);
+  const historicalAudit = (await json(await request('/audit-logs', teacher.cookie))).logs.find((item: any) => item.action === 'inventory_inbound' && item.objectId === String(historyChemical.id));
+  assert.deepEqual(historicalAudit.actor, historicalPerson);
 
   const race = (await json(await request('/users', teacher.cookie, { method: 'POST', body: JSON.stringify({
     username: 'acceptance-delete-race', displayName: '验收并发删除', role: 'member', password: 'AcceptanceRace123!',
@@ -437,7 +459,7 @@ try {
   assert.equal(hazardRow.demo, 1); assert.equal((await request(`/users/${hazard.user.id}`, teacher.cookie, { method: 'DELETE' })).status, 200);
   assert.equal((system.db.prepare('SELECT demo FROM users WHERE id=?').get(hazard.user.id) as { demo: number }).demo, 0);
   assert.equal((await request('/auth/me', hazard.cookie)).status, 401); assert.deepEqual(system.db.prepare('PRAGMA foreign_key_check').all(), []);
-  console.log('PASS account deletion: guards, cleanup, random tombstone, safe realtime/disconnect, username reuse, history/FK retention, demo/non-demo, concurrent idempotence');
+  console.log('PASS account deletion: login identity/private-state removal, retained historical names/rows/FKs, safe realtime/disconnect, username reuse, guards, demo/non-demo, concurrent idempotence');
 
   const logs = (await json(await request('/audit-logs', alice.cookie))).logs; assert(logs.some((log: any) => log.summary.includes('偏好屏蔽验证'))); assert(logs.some((log: any) => log.action === 'purchase_rejected')); assert.equal(logs.filter((log: any) => log.action === 'purchase_purchased').length, 4); assert(logs.some((log: any) => log.action === 'account_deleted')); assert(logs.every((log: any) => !('details' in log)));
   console.log(`ACCEPTANCE OK (${logs.length} audit entries verified)`);

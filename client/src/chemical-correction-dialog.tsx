@@ -21,7 +21,7 @@ interface CorrectionFields {
 }
 
 export function canCorrectChemical(user: UserView, chemical: Chemical): boolean {
-  return chemical.status === 'active' && (user.role === 'super_admin' || chemical.owner.id === user.id);
+  return user.active && chemical.status === 'active';
 }
 
 export function buildChemicalCorrectionPayload(fields: CorrectionFields, version: number): ChemicalCorrectionPayload {

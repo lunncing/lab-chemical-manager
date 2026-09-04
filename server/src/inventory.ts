@@ -72,7 +72,6 @@ export function inventoryRouter(db: Db, io: SocketServer): Router {
     const req = request as AuthedRequest; const id = Number(req.params.id); const input = parseBody(chemicalCorrectionSchema, req.body);
     const current = getChemical(db, id);
     if (current.status !== 'active') throw new HttpError(409, '已废弃药品不能更正', 'CONFLICT');
-    if (req.user.role !== 'super_admin' && current.owner.id !== req.user.id) throw new HttpError(403, '只有归属人或超级管理员可以更正药品信息', 'FORBIDDEN');
     if (current.version !== input.version) throw new HttpError(409, '药品已被其他人修改', 'CONFLICT');
 
     const next = {

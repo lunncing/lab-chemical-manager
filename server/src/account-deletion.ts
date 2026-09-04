@@ -6,7 +6,7 @@ import { hashPassword } from './security.js';
 
 export interface DeletedAccount {
   id: number;
-  mode: 'anonymized';
+  mode: 'login_identity_removed_display_name_retained';
 }
 
 interface AccountDeletionCommit {
@@ -41,14 +41,14 @@ export function deleteAccount(db: Db, actorId: number, id: number, now = new Dat
     db.prepare('DELETE FROM notifications WHERE user_id=?').run(id);
     db.prepare('DELETE FROM notification_preferences WHERE user_id=?').run(id);
     const updated = db.prepare(`UPDATE users
-      SET username=?,display_name=?,password_hash=?,active=0,demo=0,deleted_at=?,version=version+1,updated_at=?
-      WHERE id=? AND deleted_at IS NULL`).run(deletedUsername, `已删除用户 #${id}`, deletedPasswordHash, now, now, id);
+      SET username=?,password_hash=?,active=0,demo=0,deleted_at=?,version=version+1,updated_at=?
+      WHERE id=? AND deleted_at IS NULL`).run(deletedUsername, deletedPasswordHash, now, now, id);
     if (updated.changes !== 1) throw new HttpError(404, '账号不存在', 'NOT_FOUND');
 
-    const deleted: DeletedAccount = { id, mode: 'anonymized' };
+    const deleted: DeletedAccount = { id, mode: 'login_identity_removed_display_name_retained' };
     const audit = insertAudit(db, {
       actorId, action: 'account_deleted', objectType: 'user', objectId: id,
-      summary: `账号 #${id} 已匿名删除`, details: { mode: deleted.mode },
+      summary: `账号 #${id} 登录身份已删除，历史姓名保留`, details: { mode: deleted.mode },
     }, now);
     return { deleted, audit };
   });

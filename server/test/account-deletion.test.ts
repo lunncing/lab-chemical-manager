@@ -120,7 +120,7 @@ describe('DELETE /api/users/:id', () => {
     expect((ctx.system.db.prepare(`SELECT COUNT(*) count FROM audit_logs WHERE action='account_deleted' AND object_id=?`).get(String(target.id)) as { count: number }).count).toBe(0);
   });
 
-  it('irreversibly anonymizes a demo account, cleans private state, emits safely, disconnects sockets, and permits admin reuse', async () => {
+  it('irreversibly removes a demo login identity while retaining its display name and permits admin reuse', async () => {
     const teacherCookie = await login(ctx.base, 'teacher');
     const aliceCookie = await login(ctx.base, 'member-a');
     const original = ctx.system.db.prepare(`SELECT * FROM users WHERE username='member-a'`).get() as Record<string, unknown>;
@@ -142,14 +142,15 @@ describe('DELETE /api/users/:id', () => {
     const response = await api(ctx.base, teacherCookie, `/api/users/${id}`, { method: 'DELETE' });
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ deleted: { id, mode: 'anonymized' } });
-    expect(await changed).toEqual(body.deleted);
+    const emitted = await changed;
     expect(await disconnected).toBe('io server disconnect');
 
     const tombstone = ctx.system.db.prepare('SELECT * FROM users WHERE id=?').get(id) as Record<string, unknown>;
     expect(tombstone.username).toMatch(new RegExp(`^deleted-${id}-[A-Za-z0-9_-]+$`));
     expect(tombstone.username).not.toBe(original.username);
-    expect(tombstone.display_name).toBe(`已删除用户 #${id}`);
+    expect(tombstone.display_name).toBe(original.display_name);
+    expect(body).toEqual({ deleted: { id, mode: 'login_identity_removed_display_name_retained' } });
+    expect(emitted).toEqual(body.deleted);
     expect(tombstone.role).toBe(original.role);
     expect(tombstone.password_hash).not.toBe(original.password_hash);
     expect(String(tombstone.password_hash)).toMatch(/^scrypt\$/);
@@ -178,7 +179,7 @@ describe('DELETE /api/users/:id', () => {
 
     const deletionAudit = ctx.system.db.prepare(`SELECT * FROM audit_logs WHERE action='account_deleted' AND object_id=?`).get(String(id)) as Record<string, unknown>;
     expect(deletionAudit).toBeDefined();
-    expect(JSON.parse(String(deletionAudit.details_json))).toEqual({ mode: 'anonymized' });
+    expect(JSON.parse(String(deletionAudit.details_json))).toEqual({ mode: 'login_identity_removed_display_name_retained' });
     const deletionAuditText = JSON.stringify(deletionAudit);
     for (const secret of [String(original.username), String(original.display_name), String(original.password_hash), 'Demo1234!']) {
       expect(deletionAuditText).not.toContain(secret);
@@ -194,7 +195,7 @@ describe('DELETE /api/users/:id', () => {
     })).status).toBe(200);
   });
 
-  it('preserves referenced business/history rows and shows their user as anonymous while registration reuses the username', async () => {
+  it('preserves the original display name across business history while registration reuses the removed username', async () => {
     const teacherCookie = await login(ctx.base, 'teacher');
     const adminCookie = await login(ctx.base, 'admin');
     const bobCookie = await login(ctx.base, 'member-b');
@@ -204,12 +205,19 @@ describe('DELETE /api/users/:id', () => {
     const chemical = (await (await api(ctx.base, adminCookie, '/api/chemicals', {
       method: 'POST', body: JSON.stringify({ name: '删除历史药品', specification: 'AR 1 瓶', inboundAt: '2026-08-30T12:00:00.000Z', cabinet: 'A', shelf: 3 }),
     })).json()).chemical;
+    const moved = await api(ctx.base, adminCookie, `/api/chemicals/${chemical.id}/move`, {
+      method: 'PATCH', body: JSON.stringify({ cabinet: 'A', shelf: 4, version: chemical.version }),
+    });
+    expect(moved.status).toBe(200);
     const purchase = (await (await api(ctx.base, adminCookie, '/api/purchases', {
       method: 'POST', body: JSON.stringify({ chemicalName: '删除历史采购', specification: '1 瓶', purpose: '保留历史', hazardous: false, requestType: 'normal' }),
     })).json()).purchase;
     const bob = ctx.system.db.prepare(`SELECT id FROM users WHERE username='member-b'`).get() as { id: number };
     const inbound = (await (await api(ctx.base, adminCookie, '/api/inbound-requests', {
       method: 'POST', body: JSON.stringify({ targetUserId: bob.id, name: '删除历史代入库', specification: '1 瓶', inboundAt: '2026-08-30T12:00:00.000Z', cabinet: 'B', shelf: 2 }),
+    })).json()).request;
+    const inboundToDeleted = (await (await api(ctx.base, bobCookie, '/api/inbound-requests', {
+      method: 'POST', body: JSON.stringify({ targetUserId: id, name: '删除历史被代入库', specification: '1 瓶', inboundAt: '2026-08-30T12:00:00.000Z', cabinet: 'B', shelf: 3 }),
     })).json()).request;
     const invite = (await (await api(ctx.base, adminCookie, '/api/registration-invites', { method: 'POST' })).json()).invite;
 
@@ -230,14 +238,22 @@ describe('DELETE /api/users/:id', () => {
     expect((ctx.system.db.prepare('SELECT COUNT(*) count FROM registration_invites').get() as { count: number }).count).toBe(before.invites);
 
     const tombstone = ctx.system.db.prepare('SELECT username,display_name FROM users WHERE id=?').get(id) as { username: string; display_name: string };
-    const expectedAnonymous = { id, username: tombstone.username, displayName: `已删除用户 #${id}` };
-    const chemicalView = ((await (await api(ctx.base, teacherCookie, '/api/chemicals')).json()).chemicals as any[]).find((item) => item.id === chemical.id);
+    const expectedHistoricalActor = { id, username: tombstone.username, displayName: original.display_name };
+    const chemicalDetail = await (await api(ctx.base, teacherCookie, `/api/chemicals/${chemical.id}`)).json();
+    const chemicalView = chemicalDetail.chemical;
     const purchaseView = ((await (await api(ctx.base, teacherCookie, '/api/purchases')).json()).purchases as any[]).find((item) => item.id === purchase.id);
     const inboundView = ((await (await api(ctx.base, bobCookie, '/api/inbound-requests?scope=incoming')).json()).requests as any[]).find((item) => item.id === inbound.id);
-    expect(chemicalView.owner).toEqual(expectedAnonymous);
-    expect(chemicalView.inboundOperator).toEqual(expectedAnonymous);
-    expect(purchaseView.applicant).toEqual(expectedAnonymous);
-    expect(inboundView.requester).toEqual(expectedAnonymous);
+    const outboundView = ((await (await api(ctx.base, bobCookie, '/api/inbound-requests?scope=mine')).json()).requests as any[]).find((item) => item.id === inboundToDeleted.id);
+    expect.soft(tombstone.display_name).toBe(original.display_name);
+    expect.soft(chemicalView.owner).toEqual(expectedHistoricalActor);
+    expect.soft(chemicalView.inboundOperator).toEqual(expectedHistoricalActor);
+    expect.soft(chemicalDetail.movements).toHaveLength(2);
+    for (const movement of chemicalDetail.movements) {
+      expect.soft(movement).toMatchObject({ operator_username: tombstone.username, operator_name: original.display_name });
+    }
+    expect.soft(purchaseView.applicant).toEqual(expectedHistoricalActor);
+    expect.soft(inboundView.requester).toEqual(expectedHistoricalActor);
+    expect.soft(outboundView.targetUser).toEqual(expectedHistoricalActor);
 
     const registration = await register({
       username: 'admin', displayName: '新注册管理员名', password: 'RegisteredAgain123!', passwordConfirm: 'RegisteredAgain123!', inviteCode: invite.code,
@@ -251,15 +267,15 @@ describe('DELETE /api/users/:id', () => {
 
     const invites = (await (await api(ctx.base, teacherCookie, '/api/registration-invites')).json()).invites as any[];
     const inviteView = invites.find((item) => item.id === invite.id);
-    expect(inviteView.creator).toEqual(expectedAnonymous);
+    expect.soft(inviteView.creator).toEqual(expectedHistoricalActor);
     expect(inviteView.usedBy).toMatchObject({ id: registration.body.user.id, username: 'admin' });
     const logs = (await (await api(ctx.base, teacherCookie, '/api/audit-logs')).json()).logs as any[];
     const historicalAudit = logs.find((log) => log.action === 'inventory_inbound' && log.objectId === String(chemical.id));
-    expect(historicalAudit.actor).toEqual(expectedAnonymous);
+    expect.soft(historicalAudit.actor).toEqual(expectedHistoricalActor);
     expect(ctx.system.db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
 
-  it('serializes concurrent deletion so a non-demo account is anonymized exactly once', async () => {
+  it('serializes concurrent deletion so a non-demo login identity is removed exactly once', async () => {
     const teacherCookie = await login(ctx.base, 'teacher');
     const created = (await (await api(ctx.base, teacherCookie, '/api/users', {
       method: 'POST', body: JSON.stringify({ username: 'delete-race', displayName: '并发删除', role: 'member', password: 'DeleteRace123!' }),

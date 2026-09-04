@@ -65,7 +65,7 @@ export function AccountActionDialog({ account, action, onClose, onDone }: {
   const description = action === 'edit'
     ? '可修改姓名和角色；新密码留空表示保持现有密码。'
     : action === 'delete'
-      ? '删除不可逆。账号将匿名化，历史业务记录会保留，但该账号无法恢复或登录。'
+      ? '删除不可逆。账号将无法恢复登录，用户名和登录凭据会被移除；姓名将保留在历史业务记录中。'
       : disabling ? '停用后该账号无法登录，之后可以重新启用。' : '启用后该账号可以再次登录。';
   const confirmLabel = action === 'edit' ? '保存修改' : action === 'delete' ? '确认删除' : disabling ? '确认停用' : '确认启用';
   async function submit(event: FormEvent<HTMLFormElement>) {

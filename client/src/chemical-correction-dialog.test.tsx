@@ -13,7 +13,7 @@ const normalAdmin: UserView = { id: 2, username: 'admin', displayName: '普通�
 const hazardousBuyer: UserView = { id: 3, username: 'hazard', displayName: '危险品采购人', role: 'hazardous_buyer', active: true, demo: true, version: 1 };
 const superAdmin: UserView = { id: 1, username: 'teacher', displayName: '李老师', role: 'super_admin', active: true, demo: true, version: 1 };
 const chemical: Chemical = {
-  id: 7, name: '乙腈', specification: 'HPLC 4L', casNumber: '75-05-8', cabinet: 'B', shelf: 2, status: 'active', version: 3,
+  id: 7, name: '乙腈', specification: 'HPLC 4L', casNumber: '75-05-8', cabinet: 'A', shelf: 1, status: 'active', version: 3,
   owner: { id: owner.id, username: owner.username, displayName: owner.displayName },
   inboundOperator: { id: otherMember.id, username: otherMember.username, displayName: otherMember.displayName },
   inboundAt: '2026-09-01T08:00:00.000Z', createdAt: '2026-08-30T08:00:00.000Z', updatedAt: '2026-09-01T08:00:00.000Z', discardReason: null,
@@ -22,18 +22,24 @@ const chemical: Chemical = {
 afterEach(() => { vi.restoreAllMocks(); });
 
 describe('chemical detail correction UI', () => {
-  it('shows the correction affordance only to the active owner or a super administrator', () => {
-    expect(canCorrectChemical(owner, chemical)).toBe(true);
-    expect(canCorrectChemical(superAdmin, chemical)).toBe(true);
-    for (const user of [otherMember, normalAdmin, hazardousBuyer]) expect(canCorrectChemical(user, chemical)).toBe(false);
-    expect(canCorrectChemical(owner, { ...chemical, status: 'discarded' })).toBe(false);
+  it('allows every enabled signed-in role to correct an active A1 chemical and rejects discarded chemicals', () => {
+    expect([owner, otherMember, normalAdmin, hazardousBuyer, superAdmin].map((user) => canCorrectChemical(user, chemical))).toEqual([true, true, true, true, true]);
+    for (const user of [owner, otherMember, normalAdmin, hazardousBuyer, superAdmin]) {
+      expect(canCorrectChemical(user, { ...chemical, status: 'discarded' })).toBe(false);
+    }
+  });
 
+  it('renders the correction action for non-owner roles on active A1 but not for discarded chemicals', () => {
     const ownerHtml = renderToStaticMarkup(<ChemicalModal user={owner} chemical={chemical} onClose={() => undefined} onCorrect={() => undefined} onDiscard={() => undefined} onDone={() => undefined} />);
     expect(ownerHtml).toContain('CAS号'); expect(ownerHtml).toContain('75-05-8');
     expect(ownerHtml).toContain('调动'); expect(ownerHtml).toContain('更正信息'); expect(ownerHtml).toContain('废弃药品');
-    const outsiderHtml = renderToStaticMarkup(<ChemicalModal user={otherMember} chemical={{ ...chemical, casNumber: null }} onClose={() => undefined} onCorrect={() => undefined} onDiscard={() => undefined} onDone={() => undefined} />);
-    expect(outsiderHtml).toContain('未填写');
-    expect(outsiderHtml).not.toContain('更正信息');
+    for (const user of [otherMember, normalAdmin, hazardousBuyer]) {
+      const html = renderToStaticMarkup(<ChemicalModal user={user} chemical={{ ...chemical, casNumber: null }} onClose={() => undefined} onCorrect={() => undefined} onDiscard={() => undefined} onDone={() => undefined} />);
+      expect(html).toContain('未填写');
+      expect(html).toContain('更正信息');
+    }
+    const discardedHtml = renderToStaticMarkup(<ChemicalModal user={otherMember} chemical={{ ...chemical, status: 'discarded' }} onClose={() => undefined} onCorrect={() => undefined} onDiscard={() => undefined} onDone={() => undefined} />);
+    expect(discardedHtml).not.toContain('更正信息');
   });
 
   it('renders a prefilled accessible in-app modal with optional CAS and no location/owner controls', () => {

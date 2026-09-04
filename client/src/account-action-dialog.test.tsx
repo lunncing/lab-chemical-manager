@@ -42,7 +42,9 @@ describe('account action dialogs', () => {
     expect(enable).toContain('启用账号'); expect(enable).toContain('确认启用');
 
     const remove = renderToStaticMarkup(<AccountActionDialog account={account} action="delete" onClose={() => undefined} onDone={() => undefined} />);
-    expect(remove).toContain('删除账号'); expect(remove).toContain('不可逆'); expect(remove).toContain('匿名化'); expect(remove).toContain('历史');
+    expect(remove).toContain('删除账号'); expect(remove).toContain('不可逆'); expect(remove).toContain('无法恢复登录');
+    expect(remove).toContain('用户名和登录凭据会被移除'); expect(remove).toContain('姓名将保留在历史业务记录中');
+    expect(remove).not.toContain('匿名化');
     expect(remove).toContain('输入用户名 member-a 确认删除'); expect(remove).toContain('required=""');
     expect(remove).toMatch(/type="submit" class="danger" disabled=""/);
     expect(canDeleteAccount(account, 'member-a')).toBe(true);

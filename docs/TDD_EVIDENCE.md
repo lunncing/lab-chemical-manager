@@ -2488,3 +2488,163 @@ HEAD: 2534d3fcc4037039e64fd8e09270beeab5f0a7a5；未 commit
 ```
 
 无已知功能 blocker。V1.7 active source 未在 Phase C 重跑是明确的安全边界，不影响独立 legacy migration regression 和已保留的 Phase B staged-copy 证据。
+
+## 2026-09-05 — V1.9.1 全员更正权限与 `qs` 安全升级
+
+基线为 `62bf2e35232271d10394b950334ec2d33cb685d6`。所有 HTTP 测试只使用内存 SQLite 和系统分配临时端口；没有启动或访问端口 3000，也没有访问持久数据库。
+
+### Focused RED — 非归属成员更正 active A1
+
+先只修改 UI/API 测试，生产代码保持不变：
+
+```text
+npm test -- client/src/chemical-correction-dialog.test.tsx server/test/inventory-correction.test.ts --reporter=verbose
+exit 1
+Test Files 2 failed (2)
+Tests 4 failed | 9 passed (13)
+
+UI permission matrix:
+expected [true, true, true, true, true]
+received [true, false, false, false, true]
+
+UI rendered affordance:
+non-owner member A1 detail did not contain “更正信息”
+
+API:
+Bob PATCH of Alice-owned active A1 expected 200, received 403
+all-role A1 matrix first non-owner request expected 200, received 403
+```
+
+该 RED 同时证明旧客户端隐藏非归属 member / normal_admin / hazardous_buyer 的按钮，旧服务端拒绝 Bob 对 Alice 所有的 active A1 药品执行更正。其余 focused 回归在 RED 中仍有 9 项通过。
+
+### Pre-update production audit
+
+`npm audit --omit=dev --json` 退出码 1，报告 indirect `qs` 一个 moderate vulnerability（同时命中 GHSA-x5fp-wj9c-mxmx 与 GHSA-4mjr-xmp4-gh2g）；high/critical/low 均为 0。完整原始 JSON 保存在 `docs/npm-audit-v1.9.1-before.json`。
+
+### Minimal GREEN
+
+生产权限变更只有两个逻辑点：服务端删除 owner/super 403 分支；客户端 `canCorrectChemical()` 改为“启用用户且药品 active”。严格 schema、版本检查、no-op 检查、事务内 update + audit、实际 `req.user.id` actor 和 commit 后 emit 均未改动。
+
+```text
+npm test -- client/src/chemical-correction-dialog.test.tsx server/test/inventory-correction.test.ts --reporter=verbose
+exit 0; Test Files 2 passed (2); Tests 13 passed (13)
+
+npm test -- client/src/chemical-correction-dialog.test.tsx server/test/inventory-correction.test.ts client/src/native-dialog-guard.test.tsx --reporter=verbose
+exit 0; Test Files 3 passed (3); Tests 14 passed (14)
+```
+
+GREEN 覆盖 Bob 更正 Alice 的 active A1 且审计 actor=`member-b`，member / normal_admin / hazardous_buyer / super_admin 完整角色矩阵，以及未登录 401、discarded 409、严格字段 400、CAS 清空、no-op 400、stale/concurrent 409、审计失败事务回滚和 commit 后 realtime。
+
+### `qs` lockfile-only update
+
+父依赖范围为 Express 5.2.1 的 `qs ^6.14.0` 和 Body Parser 2.3.0 的 `qs ^6.15.2`，均原生接受修复版。执行非 force 的 `npm update qs --package-lock-only --ignore-scripts` 后：
+
+```text
+package.json: unchanged
+package-lock.json: 1 file changed, 3 insertions(+), 3 deletions(-)
+only node_modules/qs version/resolved/integrity changed
+6.15.3 -> 6.16.0
+
+npm ci: exit 0; added 229 packages; found 0 vulnerabilities
+npm ls express qs --all: exit 0
+express@5.2.1 -> qs@6.16.0
+express@5.2.1 -> body-parser@2.3.0 -> qs@6.16.0 deduped
+
+npm audit --omit=dev --json: exit 0
+info=0, low=0, moderate=0, high=0, critical=0, total=0
+```
+
+完整升级后 JSON 保存在 `docs/npm-audit-v1.9.1-after.json`。
+
+### Final verification
+
+```text
+npm test: exit 0; Test Files 58 passed (58); Tests 210 passed (210)
+npm run lint: exit 0
+npm run build: exit 0; 82 modules transformed; index-DL3vd5AJ.js / index-D-tHaa86.css
+npm run acceptance: exit 0; ACCEPTANCE OK (72 audit entries verified)
+node server/dist/server/scripts/performance-benchmark.js: exit 0
+  health p50/p95 15.29/15.94 ms
+  audit p50/p95 14.74/16.14 ms; 500 rows
+  purchases p50/p95 14.64/16.47 ms; 500 rows
+  20 concurrent health: 0 errors; RSS 109.08 MB; thresholds PASS
+source native-dialog guard: 0 prompt/confirm calls
+production bundle: contains “更正信息”; native prompt/confirm matches 0
+git diff --check: exit 0; all 11 changed/untracked files trailing-whitespace matches 0
+package.json diff: none; package-lock.json: 3 insertions / 3 deletions, only qs metadata
+HEAD: 62bf2e35232271d10394b950334ec2d33cb685d6
+```
+
+所有验收与 benchmark 只使用内存或临时数据库和系统分配端口，退出时关闭服务并清理临时数据；未启动、占用或访问端口 3000，未访问任何持久数据库。未 commit，未 push。
+
+### Section 4 RED — 删除登录身份后保留历史姓名
+
+在修改删除实现和 UI 文案前，只更新账号删除与删除 Modal 测试：
+
+```text
+npm test -- client/src/account-action-dialog.test.tsx server/test/account-deletion.test.ts --reporter=verbose
+exit 1
+Test Files 2 failed (2)
+Tests 3 failed | 7 passed (10)
+
+users.display_name:
+expected “成员甲” / “普通管理员”
+received “已删除用户 #4” / “已删除用户 #2”
+
+historical joins (soft assertions):
+chemical owner + inbound operator, 2 inventory movement operators,
+purchase applicant, inbound requester + target, invite creator, audit actor
+all received “已删除用户 #2” instead of “普通管理员”
+
+UI:
+delete Modal lacked the new login-removal/name-retention warning and still contained “匿名化”
+```
+
+该 RED 直接证明旧删除语义覆盖 `users.display_name`，而所有历史 API 又正确地通过外键 JOIN 同一用户行，因此药品/库存及其他 actor 视图同步退化为“已删除用户 #ID”。
+
+### Section 4 minimal GREEN
+
+生产删除事务仅从 `UPDATE users` 中移除 `display_name` 赋值；随机唯一墓碑 username、不可知随机 scrypt 密码哈希、`active=0`、`demo=0`、`deleted_at/version/updated_at`、会话/个人通知/通知偏好清理均保持。API、实时事件和删除审计 mode 改为 `login_identity_removed_display_name_retained`，删除审计摘要和客户端文案同步表达“登录身份删除、历史姓名保留”。未增加列或迁移。
+
+```text
+npm test -- client/src/account-action-dialog.test.tsx server/test/account-deletion.test.ts --reporter=verbose
+exit 0
+Test Files 2 passed (2)
+Tests 10 passed (10)
+```
+
+GREEN 覆盖：用户行姓名保留；药品归属人/入库操作人、入库与调动 operator、采购申请人、代入库 requester/target、邀请码创建人、公开审计 actor 均显示原姓名；原 username/密码/cookie 登录失效，私有状态清空，原 username 可由新账号复用；删除审计不包含原 username、姓名、密码哈希或明文密码；self、last-active-super、not-found/already-deleted、并发 double delete、demo/non-demo、FK 等原保护继续通过。
+
+旧版本已覆盖为“已删除用户 #ID”的 `display_name` 没有可靠恢复来源。本次没有恢复逻辑或数据迁移，不猜测、不自动伪造，既有占位值保持现状。
+
+### Section 4 final verification
+
+下列结果取代上方 Section 1–3 完成时的 final verification 快照：
+
+```text
+focused regression (deletion/UI/correction/auth/inbound/native-dialog):
+  exit 0; Test Files 9 passed (9); Tests 35 passed (35)
+npm ci: exit 0; added 229 packages; found 0 vulnerabilities
+npm ls express qs --all: exit 0
+  express@5.2.1 -> qs@6.16.0
+  express@5.2.1 -> body-parser@2.3.0 -> qs@6.16.0 deduped
+npm audit --omit=dev --json: exit 0
+  info=0, low=0, moderate=0, high=0, critical=0, total=0
+npm test: exit 0; Test Files 58 passed (58); Tests 210 passed (210)
+npm run lint: exit 0
+npm run build: exit 0; 82 modules transformed; index-BTamVex7.js / index-D-tHaa86.css
+npm run acceptance: exit 0; ACCEPTANCE OK (74 audit entries verified)
+node server/dist/server/scripts/performance-benchmark.js: exit 0
+  health p50/p95 15.49/16.21 ms
+  audit p50/p95 15.00/16.80 ms; 500 rows
+  purchases p50/p95 14.73/16.91 ms; 500 rows
+  20 concurrent health: 0 errors; RSS 93.27 MB; thresholds PASS
+production bundle:
+  “更正信息”=1, login-removal warning=1, retained-name success=1
+  “匿名化”=0, native prompt/confirm calls=0
+git diff --check: exit 0
+package.json diff: none; package-lock.json: 3 insertions / 3 deletions, only qs metadata
+HEAD: 62bf2e35232271d10394b950334ec2d33cb685d6
+```
+
+测试、acceptance 和 benchmark 仅使用内存或系统临时目录数据库以及系统分配端口，均在退出时关闭并清理；没有启动、占用或访问端口 3000，没有访问或修改持久/远程数据库。全程单 writer；未 commit，未 push。

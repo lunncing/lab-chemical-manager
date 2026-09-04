@@ -18,6 +18,24 @@ async function correct(cookie: string, id: number, body: Record<string, unknown>
 }
 
 describe('stored chemical detail correction', () => {
+  it('lets non-owner member Bob correct Alice\'s active A1 chemical and records Bob as the audit actor', async () => {
+    const alice = await login(ctx.base, 'member-a'); const bob = await login(ctx.base, 'member-b');
+    const chemical = await createChemical(alice, { cabinet: 'A', shelf: 1 });
+
+    const response = await correct(bob, chemical.id, { name: '乙腈（Bob 更正）', version: chemical.version });
+    expect(response.status).toBe(200);
+    expect((await response.json()).chemical).toMatchObject({
+      name: '乙腈（Bob 更正）', cabinet: 'A', shelf: 1, status: 'active', version: chemical.version + 1,
+      owner: { username: 'member-a' },
+    });
+    const audit = ctx.system.db.prepare(`SELECT a.actor_id,u.username actor_username,a.details_json
+      FROM audit_logs a JOIN users u ON u.id=a.actor_id
+      WHERE a.action='inventory_details_corrected' AND a.object_id=?`).get(String(chemical.id)) as { actor_id: number; actor_username: string; details_json: string };
+    const bobRow = ctx.system.db.prepare(`SELECT id FROM users WHERE username='member-b'`).get() as { id: number };
+    expect(audit).toMatchObject({ actor_id: bobRow.id, actor_username: 'member-b' });
+    expect(JSON.parse(audit.details_json)).toEqual({ before: { name: '乙腈' }, after: { name: '乙腈（Bob 更正）' } });
+  });
+
   it('lets the owner change only detail fields and keeps structured before/after server-side behind a public summary', async () => {
     const alice = await login(ctx.base, 'member-a');
     const chemical = await createChemical(alice);
@@ -50,32 +68,38 @@ describe('stored chemical detail correction', () => {
     expect(publicAudit).not.toHaveProperty('detailsJson');
   });
 
-  it('enforces owner/super authorization, rejects unknown or required-field clears, and permits explicit CAS clearing', async () => {
+  it('allows every authenticated role on active A1 while preserving auth, strict-field, CAS-clearing, and discarded guards', async () => {
     const alice = await login(ctx.base, 'member-a'); const bob = await login(ctx.base, 'member-b');
     const normalAdmin = await login(ctx.base, 'admin'); const hazardousBuyer = await login(ctx.base, 'hazard'); const teacher = await login(ctx.base, 'teacher');
-    const chemical = await createChemical(alice);
+    const chemical = await createChemical(alice, { cabinet: 'A', shelf: 1 });
 
-    for (const cookie of [bob, normalAdmin, hazardousBuyer]) {
-      const forbidden = await correct(cookie, chemical.id, { name: '越权更正', version: chemical.version });
-      expect(forbidden.status).toBe(403);
+    let version = chemical.version;
+    for (const [cookie, name] of [[bob, '成员更正'], [normalAdmin, '普通管理员更正'], [hazardousBuyer, '危险品采购人更正'], [teacher, '超级管理员更正']] as const) {
+      const allowed = await correct(cookie, chemical.id, { name, version });
+      expect(allowed.status).toBe(200);
+      const corrected = (await allowed.json()).chemical;
+      expect(corrected).toMatchObject({ name, cabinet: 'A', shelf: 1, status: 'active', owner: { username: 'member-a' } });
+      version = corrected.version;
     }
+    const unauthenticated = await correct('', chemical.id, { name: '未登录更正', version });
+    expect(unauthenticated.status).toBe(401);
     for (const invalidBody of [
-      { ownerId: 5, version: chemical.version },
-      { cabinet: 'A', version: chemical.version },
-      { name: '   ', version: chemical.version },
-      { name: null, version: chemical.version },
-      { specification: '', version: chemical.version },
-      { inboundAt: null, version: chemical.version },
+      { ownerId: 5, version },
+      { cabinet: 'B', version },
+      { name: '   ', version },
+      { name: null, version },
+      { specification: '', version },
+      { inboundAt: null, version },
     ]) {
       const invalid = await correct(alice, chemical.id, invalidBody);
       expect(invalid.status).toBe(400);
     }
-    expect((ctx.system.db.prepare('SELECT version FROM chemicals WHERE id=?').get(chemical.id) as { version: number }).version).toBe(chemical.version);
+    expect((ctx.system.db.prepare('SELECT version FROM chemicals WHERE id=?').get(chemical.id) as { version: number }).version).toBe(version);
 
-    const clearedResponse = await correct(teacher, chemical.id, { casNumber: '   ', version: chemical.version });
+    const clearedResponse = await correct(teacher, chemical.id, { casNumber: '   ', version });
     expect(clearedResponse.status).toBe(200);
     const cleared = (await clearedResponse.json()).chemical;
-    expect(cleared).toMatchObject({ casNumber: null, version: chemical.version + 1 });
+    expect(cleared).toMatchObject({ casNumber: null, version: version + 1 });
     expect(ctx.system.db.prepare('SELECT cas_number FROM chemicals WHERE id=?').get(chemical.id)).toEqual({ cas_number: null });
 
     const discarded = await api(ctx.base, alice, `/api/chemicals/${chemical.id}/discard`, { method: 'PATCH', body: JSON.stringify({ confirmed: true, version: cleared.version }) });
