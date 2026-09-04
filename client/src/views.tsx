@@ -16,16 +16,20 @@ import { PurchaseActionDialog } from './purchase-action-dialog.js';
 import { AccountActionDialog, AccountRowActions, type AccountDialogAction } from './account-action-dialog.js';
 import { canReviewPasswordResetRequests, PasswordResetDecisionDialog, PasswordResetQueue, type PasswordResetDecision } from './password-reset-admin-ui.js';
 import { createLatestInventoryRequestGate, planInventoryRequests, scheduleInventorySearch } from './inventory-requests.js';
-import { ChemicalCorrectionDialog, canCorrectChemical, replaceCorrectedChemical } from './chemical-correction-dialog.js';
+import {
+  ChemicalCorrectionDialog, cancelChemicalCorrection, canCorrectChemical, completeChemicalCorrection, startChemicalCorrection,
+  type ChemicalCorrectionContext,
+} from './chemical-correction-dialog.js';
 
 function messageOf(error: unknown) { return error instanceof ApiError ? error.message : '操作失败，请重试'; }
 const formatTime = (value: string | null) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
 
 export function InventoryView({ user, revision, onChanged }: { user: UserView; revision: number; onChanged: () => void }) {
-  const [chemicals, setChemicals] = useState<Chemical[]>([]); const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState(''); const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [selected, setSelected] = useState<Chemical | null>(null); const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
+  const [correctionContext, setCorrectionContext] = useState<ChemicalCorrectionContext>({ chemicals: [], selected: null, correcting: null });
+  const { chemicals, selected, correcting } = correctionContext;
+  const [members, setMembers] = useState<UserView[]>([]); const [incoming, setIncoming] = useState<InboundRequest[]>([]); const [mine, setMine] = useState<InboundRequest[]>([]); const [search, setSearch] = useState(''); const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [showInbound, setShowInbound] = useState(false); const [proxyQueue, setProxyQueue] = useState<ProxyInboundQueueScope | null>(null); const [error, setError] = useState(''); const [success, setSuccess] = useState('');
   const [discarding, setDiscarding] = useState<Chemical | null>(null); const [inboundAction, setInboundAction] = useState<{ request: InboundRequest; action: InboundRequestDialogAction } | null>(null);
-  const [correcting, setCorrecting] = useState<Chemical | null>(null);
   const chemicalRequests = useRef(createLatestInventoryRequestGate()); const supportingRequests = useRef(createLatestInventoryRequestGate());
   useEffect(() => {
     chemicalRequests.current.cancel();
@@ -34,7 +38,7 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
   useEffect(() => {
     const request = chemicalRequests.current.begin(); const path = planInventoryRequests('search', debouncedSearch).chemicals;
     api<{ chemicals: Chemical[] }>(path, { signal: request.signal })
-      .then((stock) => { if (request.isCurrent()) { setChemicals(stock.chemicals); setError(''); } })
+      .then((stock) => { if (request.isCurrent()) { setCorrectionContext((current) => ({ ...current, chemicals: stock.chemicals })); setError(''); } })
       .catch((reason) => { if (request.isCurrent()) setError(messageOf(reason)); });
     return request.cancel;
   }, [revision, debouncedSearch]);
@@ -54,11 +58,11 @@ export function InventoryView({ user, revision, onChanged }: { user: UserView; r
   function withdraw(request: InboundRequest) { setProxyQueue(null); setInboundAction({ request, action: 'withdraw' }); }
   return <><header className="page-header"><div><p className="eyebrow">OPERATE / 库存</p><h1>药品柜</h1><p>点击药品查看详情、调动或废弃。A/B 柜为 1–5 层；C1/C2 与两台手套箱为独立单层位置。</p></div><ProxyInboundLaunchers incoming={incoming} mine={mine} onQueue={setProxyQueue} onInbound={() => setShowInbound(true)} /></header>
     <div className="toolbar"><label className="search">搜索药品<input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名称 / 规格 / CAS / 归属人" /></label><span>{chemicals.length} 件活动库存</span></div>
-    {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={setSelected} />
+    {error && <Status kind="error">{error}</Status>}{success && <Status kind="success">{success}</Status>}<CabinetBoard chemicals={chemicals} onChemical={(chemical) => setCorrectionContext((current) => ({ ...current, selected: chemical }))} />
     {proxyQueue && <ProxyInboundQueueModal scope={proxyQueue} requests={proxyQueue === 'incoming' ? incoming : mine} onClose={() => setProxyQueue(null)} onDecision={decide} onWithdraw={withdraw} />}
     {showInbound && <InboundModal user={user} members={members} onClose={() => setShowInbound(false)} onDone={(message) => { setShowInbound(false); setSuccess(message ?? '入库成功'); onChanged(); }} />}
-    {selected && <ChemicalModal user={user} chemical={selected} onClose={() => setSelected(null)} onCorrect={() => { setCorrecting(selected); setSelected(null); }} onDiscard={() => { setDiscarding(selected); setSelected(null); }} onDone={() => { setSelected(null); onChanged(); }} />}
-    {correcting && <ChemicalCorrectionDialog chemical={correcting} onClose={() => setCorrecting(null)} onDone={(corrected) => { setChemicals((current) => replaceCorrectedChemical(current, corrected)); setCorrecting(null); setSuccess('药品信息已更正'); onChanged(); }} />}
+    {selected && <ChemicalModal user={user} chemical={selected} onClose={() => setCorrectionContext((current) => ({ ...current, selected: null }))} onCorrect={() => setCorrectionContext(startChemicalCorrection)} onDiscard={() => { setDiscarding(selected); setCorrectionContext((current) => ({ ...current, selected: null })); }} onDone={() => { setCorrectionContext((current) => ({ ...current, selected: null })); onChanged(); }} />}
+    {correcting && <ChemicalCorrectionDialog chemical={correcting} onClose={() => setCorrectionContext(cancelChemicalCorrection)} onDone={(corrected) => { setCorrectionContext((current) => completeChemicalCorrection(current, corrected)); setSuccess('药品信息已更正'); onChanged(); }} />}
     {discarding && <ChemicalDiscardDialog chemical={discarding} onClose={() => setDiscarding(null)} onDone={() => { setDiscarding(null); setSuccess('药品已废弃'); onChanged(); }} />}
     {inboundAction && <InboundRequestActionDialog request={inboundAction.request} action={inboundAction.action} onClose={() => setInboundAction(null)} onDone={() => { setInboundAction(null); onChanged(); }} />}
   </>;

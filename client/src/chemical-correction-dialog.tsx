@@ -43,6 +43,26 @@ export function replaceCorrectedChemical(chemicals: Chemical[], corrected: Chemi
   return chemicals.map((chemical) => chemical.id === corrected.id ? corrected : chemical);
 }
 
+export interface ChemicalCorrectionContext {
+  chemicals: Chemical[];
+  selected: Chemical | null;
+  correcting: Chemical | null;
+}
+
+type PreservedCorrectionContext<T extends ChemicalCorrectionContext> = Omit<T, keyof ChemicalCorrectionContext> & ChemicalCorrectionContext;
+
+export function startChemicalCorrection<T extends ChemicalCorrectionContext>(context: T): PreservedCorrectionContext<T> {
+  return { ...context, selected: null, correcting: context.selected };
+}
+
+export function cancelChemicalCorrection<T extends ChemicalCorrectionContext>(context: T): PreservedCorrectionContext<T> {
+  return { ...context, selected: context.correcting, correcting: null };
+}
+
+export function completeChemicalCorrection<T extends ChemicalCorrectionContext>(context: T, corrected: Chemical): PreservedCorrectionContext<T> {
+  return { ...context, chemicals: replaceCorrectedChemical(context.chemicals, corrected), selected: corrected, correcting: null };
+}
+
 export function dateTimeLocalValue(value: string): string {
   const date = new Date(value);
   return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 23);

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  ChemicalCorrectionDialog, buildChemicalCorrectionPayload, canCorrectChemical, correctChemical, dateTimeLocalValue, replaceCorrectedChemical,
+  ChemicalCorrectionDialog, buildChemicalCorrectionPayload, cancelChemicalCorrection, canCorrectChemical, completeChemicalCorrection,
+  correctChemical, dateTimeLocalValue, replaceCorrectedChemical, startChemicalCorrection,
 } from './chemical-correction-dialog.js';
 import { ChemicalModal } from './views.js';
 import type { Chemical, UserView } from './types.js';
@@ -63,6 +64,40 @@ describe('chemical detail correction UI', () => {
     const html = renderToStaticMarkup(<ChemicalCorrectionDialog chemical={{ ...chemical, inboundAt: original }} onClose={() => undefined} onDone={() => undefined} />);
     expect(html).toContain(`value="${localValue}"`);
     expect(html).toContain('step="0.001"');
+  });
+
+  it('returns correction cancel and success to the detail without clearing non-empty search context', () => {
+    const untouched = { ...chemical, id: 8, name: 'retained item' };
+    const queueContext = { scope: 'incoming' as const };
+    const initial = {
+      chemicals: [chemical, untouched], selected: chemical, correcting: null,
+      search: 'acetonitrile 75-05-8', debouncedSearch: 'acetonitrile 75-05-8', queueContext,
+    };
+
+    const opened = startChemicalCorrection(initial);
+    expect(opened.selected).toBeNull();
+    expect(opened.correcting).toBe(chemical);
+
+    const cancelled = cancelChemicalCorrection(opened);
+    expect(cancelled.selected).toBe(chemical);
+    expect(cancelled.correcting).toBeNull();
+    expect(cancelled.chemicals).toBe(initial.chemicals);
+    expect(cancelled.search).toBe(initial.search);
+    expect(cancelled.debouncedSearch).toBe(initial.debouncedSearch);
+    expect(cancelled.queueContext).toBe(queueContext);
+
+    const corrected = {
+      ...chemical, name: 'acetonitrile corrected', specification: 'LC-MS 1 L', casNumber: '75-05-8',
+      inboundAt: '2026-09-02T09:30:00.000Z', version: 4,
+    };
+    const completed = completeChemicalCorrection(startChemicalCorrection(cancelled), corrected);
+    expect(completed.selected).toBe(corrected);
+    expect(completed.correcting).toBeNull();
+    expect(completed.chemicals).toEqual([corrected, untouched]);
+    expect(completed.chemicals[0]).toBe(corrected);
+    expect(completed.search).toBe(initial.search);
+    expect(completed.debouncedSearch).toBe(initial.debouncedSearch);
+    expect(completed.queueContext).toBe(queueContext);
   });
 
   it('uses the detail endpoint/version and can replace the visible item without resetting surrounding view state', async () => {
